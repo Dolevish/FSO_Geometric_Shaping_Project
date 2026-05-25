@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# MATLAB
+*.asv
+*.m~
+slprj/
+*.mex*
+*.fig
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# LaTeX / reports
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Large generated results
+**/results/
+**/outputs/
+**/temp/
