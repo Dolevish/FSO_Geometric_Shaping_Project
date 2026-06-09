@@ -35,8 +35,8 @@ sigma_X_sq     = 0.1;
 minGap_GS      = 0.005;
 p_min          = 1e-8;
 ghN_h          = 40;
-maxRounds      = 5;
-stopTolValAMI  = 1e-4;
+maxRounds      = 10;
+stopTolValAMI  = 1e-5;
 runPamPSReference = true;
 
 params = struct();
@@ -116,7 +116,7 @@ cfg.SA.minGap          = minGap_GS;
 cfg.SA.projectIters    = 3;
 
 cfg.SA.nStarts       = 12;
-cfg.SA.maxIter       = 8000;
+cfg.SA.maxIter       = 10000;
 cfg.SA.itersPerTemp  = 100;
 cfg.SA.T0            = 0.4;
 cfg.SA.Tf            = 1e-3;
@@ -142,7 +142,7 @@ cfg.SA.closePoolWhenDone = false;
 cfg.PS = struct();
 cfg.PS.p_min         = p_min;
 cfg.PS.nStarts       = 12;
-cfg.PS.maxIter       = 8000;
+cfg.PS.maxIter       = 10000;
 cfg.PS.itersPerTemp  = 100;
 
 cfg.PS.T0            = 0.05;
