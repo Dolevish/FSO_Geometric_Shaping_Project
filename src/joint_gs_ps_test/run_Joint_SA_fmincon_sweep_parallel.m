@@ -54,7 +54,7 @@ function run_Joint_SA_fmincon_sweep_parallel()
     %% ============================================================
     %  1. Ordered case grid
     % =============================================================
-    turbulenceList = [ 0.1, 0.2, 0.3];
+    turbulenceList = [0, 0.1, 0.2, 0.3];
     snrList        = 0:5:30;
 
     [Tgrid, Sgrid] = ndgrid(turbulenceList, snrList);
@@ -111,7 +111,7 @@ function run_Joint_SA_fmincon_sweep_parallel()
     cfg.strictConfigs = make_strict_configs();
 
     % Output
-    outDir = fullfile(pwd, 'results_joint_SA_fmincon_sweep_parallel');
+    outDir = fullfile(pwd, '2results_joint_SA_fmincon_sweep_parallel');
     if ~exist(outDir, 'dir')
         mkdir(outDir);
     end
