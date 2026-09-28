@@ -1,11 +1,17 @@
 function [out, results] = sa_multistart(cfg, x_baseline, taskLabel)
 %SA_MULTISTART  Multi-start SA with optional PARFOR parallelism.
 %
+% Commit B preserves the existing winner-selection rule (largest FAST AMI)
+% and adds observability/reproducibility metadata for every start.
+%
 % - Forces PROCESS-based parallel pool only.
 % - Uses a single master seed (random by default) + substreams per start.
+% - Stores initial point, final/best solution, acceptance statistics and
+%   sampled convergence history for every restart.
 % - Prints the master seed for reproducibility/debug.
 %
-
+% IMPORTANT: validated-AMi winner selection is intentionally NOT introduced
+% here; that change belongs to Commit C.
 
 if nargin < 3 || isempty(taskLabel)
     taskLabel = "[SA]";
@@ -17,12 +23,7 @@ sa = cfg.SA;
 % ---- Defaults (safe) ----
 if ~isfield(sa,'nStarts') || isempty(sa.nStarts), sa.nStarts = 1; end
 if ~isfield(sa,'useParallel') || isempty(sa.useParallel), sa.useParallel = false; end
-
-% If seedInit is empty -> random master seed each run (client-side).
-% If seedInit is numeric -> reproducible run.
 if ~isfield(sa,'seedInit'), sa.seedInit = []; end
-
-% Worker count: [] => default
 if ~isfield(sa,'numWorkers'), sa.numWorkers = []; end
 
 nStarts = sa.nStarts;
@@ -46,7 +47,6 @@ if doPar
     try
         p = gcp("nocreate");
 
-        % If a pool exists but is not Processes, restart as Processes
         if ~isempty(p)
             profNow = string(p.Cluster.Profile);
             if ~strcmpi(profNow, "Processes")
@@ -64,7 +64,8 @@ if doPar
             poolStartedHere = true;
         end
 
-        fprintf('Parallel pool active: profile=%s | workers=%d\n', string(p.Cluster.Profile), p.NumWorkers);
+        fprintf('Parallel pool active: profile=%s | workers=%d\n', ...
+            string(p.Cluster.Profile), p.NumWorkers);
     catch ME
         fprintf('Could not start parallel pool (%s). Falling back to serial.\n', ME.message);
         doPar = false;
@@ -74,40 +75,61 @@ end
 
 % ---- Choose master seed (client-side only) ----
 if isempty(sa.seedInit)
-    % random each run, but done ONLY on client (safe)
     rng("shuffle");
     masterSeed = randi([0, 2^32-1], 1, 1, "uint32");
 else
-    % reproducible mode
     masterSeed = uint32(sa.seedInit);
 end
 
 fprintf('RNG masterSeed (Threefry) = %u\n', masterSeed);
 
-% ---- Build initial points X0 using the same masterSeed (reproducible) ----
-% Use a separate stream so SA random stream state does not affect X0 generation.
+% ---- Build initial points X0 using the same masterSeed ----
+% Separate stream: SA random consumption cannot change restart initialization.
 sX0 = RandStream('Threefry','Seed',double(masterSeed));
 X0 = cell(nStarts,1);
 X0{1} = x_baseline(:);
 for k = 2:nStarts
-    sX0.Substream = k;   % deterministic per start
+    sX0.Substream = k;
     X0{k} = x_baseline(:) + 0.2*randn(sX0, numel(x_baseline), 1);
 end
 
 % ---- Preallocate results ----
+emptyHistory = struct( ...
+    'iter', [], ...
+    'currentMI', [], ...
+    'bestMI', [], ...
+    'temperature', [], ...
+    'stepStd', [], ...
+    'blockAcceptanceRate', [], ...
+    'cumulativeAcceptanceRate', [], ...
+    'sampleEvery', []);
+
 results = repmat(struct( ...
     'startIndex', NaN, ...
+    'masterSeed', masterSeed, ...
+    'substream', NaN, ...
+    'x0_raw', [], ...
+    'x0_projected', [], ...
+    'initialMI', NaN, ...
     'bestMI', -Inf, ...
     'x_best', [], ...
+    'finalMI', NaN, ...
+    'finalX', [], ...
     'runtime', NaN, ...
-    'masterSeed', masterSeed, ...
-    'substream', NaN), nStarts, 1);
+    'nIterations', NaN, ...
+    'nAccepted', NaN, ...
+    'nImprovingAccepted', NaN, ...
+    'nWorseAccepted', NaN, ...
+    'nRejected', NaN, ...
+    'acceptanceRate', NaN, ...
+    'history', emptyHistory), nStarts, 1);
 
-% ---- Constant stream for SA randomness (one per worker, lightweight) ----
+% ---- Constant stream for SA randomness ----
 if doPar
-    constantStream = parallel.pool.Constant(@() RandStream('Threefry','Seed',double(masterSeed)));
+    constantStream = parallel.pool.Constant(@() ...
+        RandStream('Threefry','Seed',double(masterSeed)));
 else
-    constantStream = []; 
+    constantStream = [];
 end
 
 % ---- Run starts ----
@@ -115,23 +137,33 @@ if doPar
     parfor k = 1:nStarts
         label = sprintf("%s-%02d", taskLabel, k);
 
-        % Each iteration uses its own substream k (independent of worker scheduling)
         s = constantStream.Value;
         s.Substream = k;
         RandStream.setGlobalStream(s);
 
-        t0 = tic;
         outk = simulated_annealing(cfg, X0{k}, k, label);
-        rt = toc(t0);
 
-        results(k).startIndex = k;
-        results(k).bestMI     = outk.bestMI;
-        results(k).x_best     = outk.x_best(:);
-        results(k).runtime    = rt;
-        results(k).substream  = k;
+        results(k).startIndex          = k;
+        results(k).masterSeed          = masterSeed;
+        results(k).substream           = k;
+        results(k).x0_raw              = X0{k}(:);
+        results(k).x0_projected        = outk.x0_projected(:);
+        results(k).initialMI           = outk.initialMI;
+        results(k).bestMI              = outk.bestMI;
+        results(k).x_best              = outk.x_best(:);
+        results(k).finalMI             = outk.finalMI;
+        results(k).finalX              = outk.finalX(:);
+        results(k).runtime             = outk.runtime;
+        results(k).nIterations         = outk.nIterations;
+        results(k).nAccepted           = outk.nAccepted;
+        results(k).nImprovingAccepted  = outk.nImprovingAccepted;
+        results(k).nWorseAccepted      = outk.nWorseAccepted;
+        results(k).nRejected           = outk.nRejected;
+        results(k).acceptanceRate      = outk.acceptanceRate;
+        results(k).history             = outk.history;
     end
 else
-    % Serial: still use the same scheme for consistency
+    % Serial: same substream scheme as parallel mode.
     s = RandStream('Threefry','Seed',double(masterSeed));
     RandStream.setGlobalStream(s);
 
@@ -141,19 +173,30 @@ else
         s.Substream = k;
         RandStream.setGlobalStream(s);
 
-        t0 = tic;
         outk = simulated_annealing(cfg, X0{k}, k, label);
-        rt = toc(t0);
 
-        results(k).startIndex = k;
-        results(k).bestMI     = outk.bestMI;
-        results(k).x_best     = outk.x_best(:);
-        results(k).runtime    = rt;
-        results(k).substream  = k;
+        results(k).startIndex          = k;
+        results(k).masterSeed          = masterSeed;
+        results(k).substream           = k;
+        results(k).x0_raw              = X0{k}(:);
+        results(k).x0_projected        = outk.x0_projected(:);
+        results(k).initialMI           = outk.initialMI;
+        results(k).bestMI              = outk.bestMI;
+        results(k).x_best              = outk.x_best(:);
+        results(k).finalMI             = outk.finalMI;
+        results(k).finalX              = outk.finalX(:);
+        results(k).runtime             = outk.runtime;
+        results(k).nIterations         = outk.nIterations;
+        results(k).nAccepted           = outk.nAccepted;
+        results(k).nImprovingAccepted  = outk.nImprovingAccepted;
+        results(k).nWorseAccepted      = outk.nWorseAccepted;
+        results(k).nRejected           = outk.nRejected;
+        results(k).acceptanceRate      = outk.acceptanceRate;
+        results(k).history             = outk.history;
     end
 end
 
-% ---- Pick best ----
+% ---- Pick best (UNCHANGED in Commit B: FAST evaluator only) ----
 allMI = [results.bestMI];
 [bestMI, idx] = max(allMI);
 
@@ -162,6 +205,10 @@ out.bestStart  = idx;
 out.bestMI     = bestMI;
 out.bestX      = results(idx).x_best(:);
 out.masterSeed = masterSeed;
+out.nStarts    = nStarts;
+out.totalRuntime = sum([results.runtime]);
+out.meanAcceptanceRate = mean([results.acceptanceRate], 'omitnan');
+out.bestRun    = results(idx);
 
 % ---- Optional pool cleanup ----
 if doPar && poolStartedHere && isfield(sa,'closePoolWhenDone') && sa.closePoolWhenDone

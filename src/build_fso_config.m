@@ -28,6 +28,8 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %   'pinZero'        enforce x(1)=0 in IM/DD projection (default true)
 %   'seedInit'       master RNG seed; [] means random (default [])
 %   'logEvery'       SA progress-print interval (default 5000)
+%   'historyEvery'   sample SA convergence history every N iterations;
+%                    [] means one sample per temperature block (default [])
 %
 % This file is the single source of truth for channel and SA defaults in the
 % IEEE revision.  Simulation drivers should migrate to this builder instead
@@ -52,6 +54,7 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     addParameter(p, 'pinZero', true, @(v) islogical(v) && isscalar(v));
     addParameter(p, 'seedInit', [], @(v) isempty(v) || (isnumeric(v) && isscalar(v) && isfinite(v) && v >= 0));
     addParameter(p, 'logEvery', 5000, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 0 && mod(v,1)==0);
+    addParameter(p, 'historyEvery', [], @(v) isempty(v) || (isnumeric(v) && isscalar(v) && isfinite(v) && v >= 1 && mod(v,1)==0));
 
     parse(p, M, P_avg, SNR_dB, sigma_X_sq, varargin{:});
     o = p.Results;
@@ -122,6 +125,14 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     sa.logEvery          = double(o.logEvery);
     sa.seedInit          = o.seedInit;
 
+    % Commit B: convergence/observability sampling cadence.  Empty means
+    % simulated_annealing samples once per temperature block.
+    if isempty(o.historyEvery)
+        sa.historyEvery = sa.itersPerTemp;
+    else
+        sa.historyEvery = double(o.historyEvery);
+    end
+
     cfg.SA = sa;
 
     % Fail early if the requested min-gap is impossible under mean power.
@@ -133,7 +144,7 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
             cfg.M, cfg.SA.minGap, minRequiredMean, cfg.P_avg);
     end
 
-    % IMPORTANT: the evaluator is intentionally side-effect free.  Candidate
+    % IMPORTANT: the evaluator is intentionally side-effect free. Candidate
     % projection is the optimizer's responsibility; the evaluator only scores
     % the constellation it receives.
     params = cfg;
