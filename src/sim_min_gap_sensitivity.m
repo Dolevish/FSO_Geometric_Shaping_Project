@@ -33,7 +33,14 @@ function bundle = sim_min_gap_sensitivity(varargin)
 %   'ComputeBER'       auxiliary BER diagnostic (default false)
 %   'MakePlots'        create summary figures (default true)
 %   'SaveFigures'      save PNG/FIG files when MakePlots=true (default true)
+%   'RunLabel'         optional human-readable run label (default '')
 %   'ResultsRoot'      output root (default repository/results/ieee_revision)
+%
+% RUN IDENTITY / NO-OVERWRITE GUARANTEE (Commit F.1):
+% Every invocation is written to its own run directory. The directory name
+% contains a sanitized RunLabel, numerical settings (GH/iterations/starts/
+% replicates), and a UTC timestamp. If an unlikely name collision occurs, a
+% numeric suffix is added. Existing experiment files are never overwritten.
 %
 % Methodological detail: for a fixed M and replicate, the SAME master seed
 % is deliberately reused across all d_min values. Thus each d_min case uses
@@ -61,6 +68,7 @@ function bundle = sim_min_gap_sensitivity(varargin)
     addParameter(p,'ComputeBER',false,@(v) islogical(v) && isscalar(v));
     addParameter(p,'MakePlots',true,@(v) islogical(v) && isscalar(v));
     addParameter(p,'SaveFigures',true,@(v) islogical(v) && isscalar(v));
+    addParameter(p,'RunLabel','',@(v) ischar(v) || (isstring(v) && isscalar(v)));
     addParameter(p,'ResultsRoot',fso_result_utils.default_results_root(),@(v) ischar(v) || isstring(v));
     parse(p,varargin{:});
     o = p.Results;
@@ -82,15 +90,29 @@ function bundle = sim_min_gap_sensitivity(varargin)
         end
     end
 
+    % ------------------------------------------------------------------
+    % Commit F.1: immutable run identity and isolated output directory.
+    % ------------------------------------------------------------------
     resultsRoot = char(o.ResultsRoot);
-    tag = sprintf('SNR%s_sig%s',num_token(o.SNR_dB,2),num_token(o.sigma_X_sq,4));
-    outDir = fullfile(resultsRoot,'min_gap_sensitivity',tag);
-    caseDir = fullfile(outDir,'cases');
-    figDir  = fullfile(outDir,'figures');
-    if ~exist(caseDir,'dir'), mkdir(caseDir); end
-    if o.MakePlots && o.SaveFigures && ~exist(figDir,'dir'), mkdir(figDir); end
+    conditionTag = sprintf('SNR%s_sig%s',num_token(o.SNR_dB,2),num_token(o.sigma_X_sq,4));
+    conditionDir = fullfile(resultsRoot,'min_gap_sensitivity',conditionTag);
 
     runMeta = fso_result_utils.run_metadata(mfilename);
+    labelToken = sanitize_run_label(o.RunLabel);
+    configToken = sprintf('GH%d_I%d_S%d_R%d',o.ghN_h,o.saMaxIter,o.saNStarts,nRep);
+    utcToken = char(datetime('now','TimeZone','UTC','Format','yyyyMMdd''T''HHmmssSSS''Z'''));
+    requestedRunId = sprintf('%s_%s_%s',labelToken,configToken,utcToken);
+    [outDir,runId] = make_unique_run_directory(conditionDir,requestedRunId);
+
+    caseDir = fullfile(outDir,'cases');
+    figDir  = fullfile(outDir,'figures');
+    mkdir(caseDir);
+    if o.MakePlots && o.SaveFigures, mkdir(figDir); end
+
+    runMeta.runId = runId;
+    runMeta.runLabel = char(string(o.RunLabel));
+    runMeta.outputDirectory = outDir;
+    runMeta.conditionTag = conditionTag;
 
     [iMGrid,iGGrid,iRGrid] = ndgrid(1:nM,1:nGap,1:nRep);
     taskM   = iMGrid(:);
@@ -100,6 +122,10 @@ function bundle = sim_min_gap_sensitivity(varargin)
 
     fprintf('\n============================================================\n');
     fprintf('IEEE revision minimum-spacing sensitivity experiment\n');
+    fprintf('Run ID: %s\n',runId);
+    if strlength(string(o.RunLabel)) > 0
+        fprintf('Run label: %s\n',char(string(o.RunLabel)));
+    end
     fprintf('M = %s | SNR=%.2f dB | sigma_X^2=%.4f | Pavg=%.4g\n', ...
         mat2str(MVec),o.SNR_dB,o.sigma_X_sq,o.P_avg);
     fprintf('d_min = %s\n',mat2str(gapVec));
@@ -152,13 +178,18 @@ function bundle = sim_min_gap_sensitivity(varargin)
     bundle = struct();
     bundle.meta       = runMeta;
     bundle.experiment = 'minimum_spacing_sensitivity';
+    bundle.run = struct( ...
+        'id',runId, ...
+        'label',char(string(o.RunLabel)), ...
+        'conditionTag',conditionTag, ...
+        'outputDirectory',outDir);
     bundle.axes = struct('M',MVec,'minGap',gapVec,'replicate',1:nRep, ...
         'SNR_dB',double(o.SNR_dB),'sigma_X_sq',double(o.sigma_X_sq),'P_avg',double(o.P_avg));
     bundle.settings = struct( ...
         'ghN_h',o.ghN_h,'saMaxIter',o.saMaxIter,'saNStarts',o.saNStarts, ...
         'nReplicates',nRep,'baseSeed',o.baseSeed,'historyEvery',o.historyEvery, ...
         'pinZero',o.pinZero,'pairedSeedsAcrossMinGap',true, ...
-        'computeBER',o.ComputeBER);
+        'computeBER',o.ComputeBER,'runLabel',char(string(o.RunLabel)));
     bundle.caseFiles = fileGrid;
     bundle.summary   = summary;
     bundle.figures   = {};
@@ -167,7 +198,7 @@ function bundle = sim_min_gap_sensitivity(varargin)
         bundle.figures = make_summary_plots(bundle,figDir,logical(o.SaveFigures));
     end
 
-    bundlePath = fullfile(outDir,sprintf('minGapSensitivity_%s.mat',tag));
+    bundlePath = fullfile(outDir,'minGapSensitivity.mat');
     save(bundlePath,'bundle','-v7.3');
 
     fprintf('\nSaved summary bundle: %s\n',bundlePath);
@@ -496,6 +527,39 @@ function print_summary(bundle)
     fprintf('\nselectionChanged fraction across all cases: %.3f\n',mean(S.selectionChanged(:)));
     fprintf('Max fast-vs-validation gap: %.3e bits/symbol\n', ...
         max(S.maxAbsFastValidationGap(:),[],'omitnan'));
+end
+
+
+function token = sanitize_run_label(v)
+    token = strtrim(char(string(v)));
+    if isempty(token)
+        token = 'run';
+        return;
+    end
+    token = regexprep(token,'[^A-Za-z0-9._-]+','_');
+    token = regexprep(token,'_+','_');
+    token = regexprep(token,'^[._-]+|[._-]+$','');
+    if isempty(token), token = 'run'; end
+end
+
+
+function [outDir,runId] = make_unique_run_directory(conditionDir,requestedRunId)
+    if ~exist(conditionDir,'dir'), mkdir(conditionDir); end
+
+    runId = requestedRunId;
+    outDir = fullfile(conditionDir,runId);
+    suffix = 1;
+    while exist(outDir,'dir')
+        suffix = suffix + 1;
+        runId = sprintf('%s_%02d',requestedRunId,suffix);
+        outDir = fullfile(conditionDir,runId);
+    end
+
+    [ok,msg] = mkdir(outDir);
+    if ~ok
+        error('sim_min_gap_sensitivity:RunDirectoryCreateFailed', ...
+            'Could not create isolated run directory %s: %s',outDir,msg);
+    end
 end
 
 
