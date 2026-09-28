@@ -2,74 +2,37 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
 %SIM_SA_HYPERPARAM_SENSITIVITY  SA hyperparameter sensitivity experiment.
 %
 % Commit G: reviewer-response experiment for SA validation/reproducibility.
-% The experiment uses one representative FSO case and a fixed minimum gap,
-% then varies the primary SA hyperparameters one factor at a time while all
-% other channel, numerical and optimization settings are held fixed.
+% A representative FSO case is held fixed while the principal SA
+% hyperparameters are varied one factor at a time (OFAT).
 %
 % Default representative case:
 %   M = 32, SNR = 20 dB, sigma_X^2 = 0.1, d_min = 0.01
 %   GH order = 400
 %
-% Primary sweeps (defaults):
+% Default sweeps:
 %   T0               = [0.1 0.2 0.4 0.8]
 %   Tf               = [1e-4 1e-3 1e-2]
 %   baseStd0         = [0.075 0.15 0.30]
 %   itersPerTemp     = [25 50 100]
 %
-% Baseline SA settings are T0=0.4, Tf=1e-3, baseStd0=0.15 and
-% itersPerTemp=50. The baseline configuration is executed only once per
-% replicate and reused in every sweep, so duplicate expensive cases are not
-% run.
+% Baseline SA configuration:
+%   T0=0.4, Tf=1e-3, baseStd0=0.15, itersPerTemp=50.
 %
-% IMPORTANT METHODOLOGICAL DETAIL:
-% For a fixed replicate the SAME master seed is reused for every SA setting.
-% Hence the comparisons are paired: restart initializations and underlying
-% random-number streams are matched across hyperparameter settings.
+% The baseline configuration is evaluated only once per replicate and is
+% reused in all four sweep views.  For a fixed replicate, the same master
+% seed is reused across SA settings.  Thus restart initializations and the
+% initial random stream are paired, although trajectories may diverge after
+% different accept/reject decisions.
 %
-% Outputs include:
-%   * independently validated winner AMI and shaping gain;
-%   * mean/std across independent multistart replicates;
-%   * 95%% and 99%% convergence iteration for the validated winner's
-%     best-so-far FAST-objective trajectory;
-%   * wall-clock runtime and SA evaluation throughput;
-%   * acceptance rate, restart variability and fast-vs-validation gap;
-%   * per-restart histories and complete case files for auditability.
+% Reported metrics include independently validated AMI, shaping gain,
+% convergence iterations k95/k99, runtime, fast-evaluator throughput,
+% acceptance rate, restart variability, and fast-vs-validation discrepancy.
 %
 % Figures:
-%   1) Validated AMI and shaping gain versus each tested hyperparameter.
-%   2) Convergence iteration (k_99) and wall-clock runtime versus parameter.
-%   3) Best-so-far fast-AMI convergence curves versus iteration.
-%   4) Acceptance rate and SA evaluation throughput versus parameter.
-%
-% Name-value options:
-%   'M'                 representative constellation size (default 32)
-%   'SNR_dB'            fixed SNR (default 20)
-%   'sigma_X_sq'        fixed normalized intensity variance (default 0.1)
-%   'P_avg'             average optical intensity (default 1)
-%   'minGap'            fixed adjacent minimum spacing (default 0.01)
-%   'ghN_h'             GH order for SA objective (default 400)
-%   'saMaxIter'         iterations per restart (default 2000)
-%   'saNStarts'         restarts per case (default 4)
-%   'nReplicates'       independent multistart batches (default 2)
-%   'baseSeed'          deterministic experiment seed (default 20260928)
-%   'historyEvery'      common convergence-history cadence (default 50)
-%   'T0Vec'             initial-temperature sweep
-%   'TfVec'             final-temperature sweep
-%   'BaseStd0Vec'       initial proposal-std sweep
-%   'ItersPerTempVec'   temperature-block-length sweep
-%   'BaselineT0'        baseline T0 (default 0.4)
-%   'BaselineTf'        baseline Tf (default 1e-3)
-%   'BaselineBaseStd0'  baseline proposal std (default 0.15)
-%   'BaselineItersPerTemp' baseline block length (default 50)
-%   'UseParallelCases'  parallelize setting/replicate cases (default true)
-%   'MakePlots'          create figures (default true)
-%   'SaveFigures'        save PNG and FIG (default true)
-%   'RunLabel'           human-readable run label (default '')
-%   'ResultsRoot'        output root (default repository/results/ieee_revision)
-%
-% The script intentionally does NOT tune minGap; d_min is fixed here so SA
-% hyperparameter effects are isolated from the separate Commit-F spacing
-% sensitivity study.
+%   1) validated AMI and shaping gain versus each hyperparameter;
+%   2) k99 and wall-clock runtime versus each hyperparameter;
+%   3) best-so-far fast-AMI convergence trajectories;
+%   4) acceptance rate and evaluator throughput.
 
     p = inputParser;
     p.FunctionName = mfilename;
@@ -81,11 +44,11 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
     addParameter(p,'minGap',0.01,@(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=0);
     addParameter(p,'ghN_h',400,@(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=2 && mod(v,1)==0);
 
-    addParameter(p,'saMaxIter',2000,@(v) isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0);
-    addParameter(p,'saNStarts',4,@(v) isnumeric(v) && isscalar(v) && v>=2 && mod(v,1)==0);
-    addParameter(p,'nReplicates',2,@(v) isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0);
+    addParameter(p,'saMaxIter',2000,@positive_integer);
+    addParameter(p,'saNStarts',4,@(v) positive_integer(v) && v>=2);
+    addParameter(p,'nReplicates',2,@positive_integer);
     addParameter(p,'baseSeed',20260928,@(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=0);
-    addParameter(p,'historyEvery',50,@(v) isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0);
+    addParameter(p,'historyEvery',50,@positive_integer);
 
     addParameter(p,'BaselineT0',0.4,@positive_scalar);
     addParameter(p,'BaselineTf',1e-3,@positive_scalar);
@@ -107,7 +70,6 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
 
     validate_baseline_membership(o);
 
-    % The minimum-gap feasibility condition is checked before a long run.
     requiredMean = (double(o.M)-1)*double(o.minGap)/2;
     if requiredMean > double(o.P_avg) + 100*eps(max(1,double(o.P_avg)))
         error('sim_sa_hyperparam_sensitivity:InfeasibleGap', ...
@@ -115,49 +77,49 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
             o.M,o.minGap,requiredMean,o.P_avg);
     end
 
-    % ------------------------------------------------------------------
-    % Build UNIQUE SA configurations.  Baseline duplicates appearing in
-    % several sweeps are represented by one expensive optimization case.
-    % ------------------------------------------------------------------
-    base = struct('T0',double(o.BaselineT0), ...
-                  'Tf',double(o.BaselineTf), ...
-                  'baseStd0',double(o.BaselineBaseStd0), ...
-                  'itersPerTemp',double(o.BaselineItersPerTemp));
+    base = struct( ...
+        'id',1, ...
+        'name','baseline', ...
+        'T0',double(o.BaselineT0), ...
+        'Tf',double(o.BaselineTf), ...
+        'baseStd0',double(o.BaselineBaseStd0), ...
+        'itersPerTemp',double(o.BaselineItersPerTemp));
 
     defs = base;
-    defs(1).id = 1;
-    defs(1).name = 'baseline';
 
-    T0Vec   = unique(double(o.T0Vec(:).'),'stable');
-    TfVec   = unique(double(o.TfVec(:).'),'stable');
-    StdVec  = unique(double(o.BaseStd0Vec(:).'),'stable');
-    BlkVec  = unique(double(o.ItersPerTempVec(:).'),'stable');
+    T0Vec  = unique(double(o.T0Vec(:).'),'stable');
+    TfVec  = unique(double(o.TfVec(:).'),'stable');
+    StdVec = unique(double(o.BaseStd0Vec(:).'),'stable');
+    BlkVec = unique(double(o.ItersPerTempVec(:).'),'stable');
 
     for v = T0Vec
-        d = base; d.T0 = v; defs = add_unique_def(defs,d,sprintf('T0=%.6g',v));
+        d = strip_identity(base); d.T0 = v;
+        defs = add_unique_def(defs,d,sprintf('T0=%.6g',v));
     end
     for v = TfVec
-        d = base; d.Tf = v; defs = add_unique_def(defs,d,sprintf('Tf=%.6g',v));
+        d = strip_identity(base); d.Tf = v;
+        defs = add_unique_def(defs,d,sprintf('Tf=%.6g',v));
     end
     for v = StdVec
-        d = base; d.baseStd0 = v; defs = add_unique_def(defs,d,sprintf('baseStd0=%.6g',v));
+        d = strip_identity(base); d.baseStd0 = v;
+        defs = add_unique_def(defs,d,sprintf('baseStd0=%.6g',v));
     end
     for v = BlkVec
-        d = base; d.itersPerTemp = v; defs = add_unique_def(defs,d,sprintf('itersPerTemp=%d',v));
+        d = strip_identity(base); d.itersPerTemp = v;
+        defs = add_unique_def(defs,d,sprintf('itersPerTemp=%d',v));
     end
 
     nDefs = numel(defs);
     nRep  = double(o.nReplicates);
 
-    sweeps = struct([]);
-    sweeps(1) = make_sweep('T0','Initial temperature T_0',T0Vec,defs,base);
+    % IMPORTANT: initialize from the first real structure.  MATLAB does not
+    % permit assigning a field-bearing structure into struct([]) on all
+    % releases (the original Commit-G smoke test exposed this on Windows).
+    sweeps = make_sweep('T0','Initial temperature T_0',T0Vec,defs,base);
     sweeps(2) = make_sweep('Tf','Final temperature T_f',TfVec,defs,base);
     sweeps(3) = make_sweep('baseStd0','Initial proposal std',StdVec,defs,base);
     sweeps(4) = make_sweep('itersPerTemp','Iterations per temperature block',BlkVec,defs,base);
 
-    % ------------------------------------------------------------------
-    % Immutable run directory.
-    % ------------------------------------------------------------------
     resultsRoot = char(o.ResultsRoot);
     conditionTag = sprintf('M%d_SNR%s_sig%s_gap%s', ...
         o.M,num_token(o.SNR_dB,2),num_token(o.sigma_X_sq,4),num_token(o.minGap,4));
@@ -180,13 +142,13 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
     runMeta.outputDirectory = outDir;
     runMeta.conditionTag = conditionTag;
 
-    % Baseline Uniform-PAM AMI is independent of the SA hyperparameters.
     xMaxBound = fso_result_utils.feasible_xmax_bound(o.M,o.P_avg,o.minGap,true);
     cfgBase = build_fso_config(o.M,o.P_avg,o.SNR_dB,o.sigma_X_sq, ...
         'ghN_h',o.ghN_h,'xMaxBound',xMaxBound, ...
         'saMaxIter',o.saMaxIter,'saNStarts',o.saNStarts, ...
         'saUseParallel',false,'minGap',o.minGap,'pinZero',true, ...
         'seedInit',1,'logEvery',0,'historyEvery',o.historyEvery);
+
     xPAM = define_constellation(o.M,o.P_avg,true,"mean");
     AMI_functions.assert_constellation_feasible(xPAM,cfgBase,1e-10);
     amiPAMFast = cfgBase.AMI_Evaluator(xPAM);
@@ -209,7 +171,7 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
     fprintf('step0 sweep: %s\n',mat2str(StdVec));
     fprintf('block sweep: %s\n',mat2str(BlkVec));
     fprintf('Unique SA settings=%d | total cases=%d\n',nDefs,nDefs*nRep);
-    fprintf('Paired seeds across SA settings: enabled\n');
+    fprintf('Paired master seeds across SA settings: enabled\n');
     fprintf('Uniform-PAM validated AMI=%.9f\n',amiPAMValidated);
     fprintf('Results: %s\n',outDir);
     fprintf('============================================================\n\n');
@@ -242,14 +204,16 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
 
         parfor k = 1:nCases
             [caseResults{k},caseFiles{k}] = run_sa_case( ...
-                defs(taskD(k)),taskR(k),o,runMeta,caseDir,xPAM,amiPAMFast,amiPAMValidated,xMaxBound);
+                defs(taskD(k)),taskR(k),o,runMeta,caseDir,xPAM, ...
+                amiPAMFast,amiPAMValidated,xMaxBound);
             send(Q,1);
         end
     else
         fprintf('Outer case parallelism: disabled\n');
         for k = 1:nCases
             [caseResults{k},caseFiles{k}] = run_sa_case( ...
-                defs(taskD(k)),taskR(k),o,runMeta,caseDir,xPAM,amiPAMFast,amiPAMValidated,xMaxBound);
+                defs(taskD(k)),taskR(k),o,runMeta,caseDir,xPAM, ...
+                amiPAMFast,amiPAMValidated,xMaxBound);
             fprintf('  completed %d/%d\n',k,nCases);
         end
     end
@@ -266,23 +230,26 @@ function bundle = sim_sa_hyperparam_sensitivity(varargin)
     bundle.case = struct('M',double(o.M),'P_avg',double(o.P_avg), ...
         'SNR_dB',double(o.SNR_dB),'sigma_X_sq',double(o.sigma_X_sq), ...
         'minGap',double(o.minGap),'ghN_h',double(o.ghN_h));
-    bundle.baselinePAM = struct('x',xPAM(:),'amiFast',amiPAMFast,'amiValidated',amiPAMValidated);
+    bundle.baselinePAM = struct('x',xPAM(:),'amiFast',amiPAMFast, ...
+        'amiValidated',amiPAMValidated);
     bundle.baselineSA = base;
-    bundle.settings = struct('saMaxIter',o.saMaxIter,'saNStarts',o.saNStarts, ...
-        'nReplicates',nRep,'baseSeed',o.baseSeed,'historyEvery',o.historyEvery, ...
-        'pairedSeedsAcrossSettings',true,'outerParallelism',doPar);
+    bundle.settings = struct('saMaxIter',double(o.saMaxIter), ...
+        'saNStarts',double(o.saNStarts),'nReplicates',nRep, ...
+        'baseSeed',double(o.baseSeed),'historyEvery',double(o.historyEvery), ...
+        'pairedMasterSeedsAcrossSettings',true,'outerParallelism',doPar);
     bundle.definitions = defs;
     bundle.sweeps = sweeps;
     bundle.caseFiles = fileGrid;
     bundle.summary = summary;
-    bundle.figures = {};
+    bundle.figureFiles = {};
 
     if o.MakePlots
-        bundle.figures = make_plots(bundle,caseGrid,figDir,logical(o.SaveFigures));
+        bundle.figureFiles = make_plots(bundle,caseGrid,figDir,logical(o.SaveFigures));
     end
 
     bundlePath = fullfile(outDir,'saHyperparameterSensitivity.mat');
     save(bundlePath,'bundle','-v7.3');
+
     fprintf('\nSaved summary bundle: %s\n',bundlePath);
     print_summary(bundle);
 
@@ -294,8 +261,6 @@ end
 
 
 function [c,path] = run_sa_case(def,repIdx,o,runMeta,caseDir,xPAM,amiPAMFast,amiPAMValidated,xMaxBound)
-    % Paired design: the seed depends on the channel case and replicate,
-    % deliberately NOT on the SA hyperparameter setting.
     replicateBaseSeed = double(o.baseSeed) + (repIdx-1)*10000019;
     seed = fso_result_utils.case_seed(replicateBaseSeed,o.M,o.SNR_dB,o.sigma_X_sq);
 
@@ -305,15 +270,17 @@ function [c,path] = run_sa_case(def,repIdx,o,runMeta,caseDir,xPAM,amiPAMFast,ami
         'saUseParallel',false,'minGap',o.minGap,'pinZero',true, ...
         'seedInit',seed,'logEvery',0,'historyEvery',o.historyEvery);
 
-    % Commit G deliberately changes SA hyperparameters AFTER construction.
-    % Recompute all derived cooling quantities so each setting is internally
-    % consistent while keeping the SA engine itself unchanged.
     cfg.SA.T0 = def.T0;
     cfg.SA.Tf = def.Tf;
     cfg.SA.baseStd0 = def.baseStd0;
     cfg.SA.itersPerTemp = def.itersPerTemp;
     cfg.SA.nBlocks = ceil(cfg.SA.maxIter/cfg.SA.itersPerTemp);
     cfg.SA.coolingRate = exp(log(cfg.SA.Tf/cfg.SA.T0)/cfg.SA.nBlocks);
+
+    if ~(cfg.SA.T0 > cfg.SA.Tf)
+        error('sim_sa_hyperparam_sensitivity:TemperatureOrder', ...
+            'Configuration %s has T0 <= Tf.',def.name);
+    end
 
     AMI_functions.assert_constellation_feasible(xPAM,cfg,1e-10);
 
@@ -333,8 +300,9 @@ function [c,path] = run_sa_case(def,repIdx,o,runMeta,caseDir,xPAM,amiPAMFast,ami
     c = struct();
     c.meta = runMeta;
     c.case = struct('definitionId',def.id,'definitionName',def.name, ...
-        'replicate',repIdx,'seed',seed,'M',double(o.M),'SNR_dB',double(o.SNR_dB), ...
-        'sigma_X_sq',double(o.sigma_X_sq),'minGap',double(o.minGap));
+        'replicate',repIdx,'seed',seed,'M',double(o.M), ...
+        'SNR_dB',double(o.SNR_dB),'sigma_X_sq',double(o.sigma_X_sq), ...
+        'minGap',double(o.minGap));
     c.sa = struct('T0',def.T0,'Tf',def.Tf,'baseStd0',def.baseStd0, ...
         'itersPerTemp',def.itersPerTemp,'coolingRate',cfg.SA.coolingRate, ...
         'maxIter',cfg.SA.maxIter,'nStarts',cfg.SA.nStarts, ...
@@ -342,7 +310,8 @@ function [c,path] = run_sa_case(def,repIdx,o,runMeta,caseDir,xPAM,amiPAMFast,ami
         'baseStdMin',cfg.SA.baseStdMin,'baseStdMax',cfg.SA.baseStdMax, ...
         'baseStdGrow',cfg.SA.baseStdGrow,'baseStdShrink',cfg.SA.baseStdShrink);
     c.config = fso_result_utils.config_snapshot(cfg);
-    c.baseline = struct('x',xPAM(:),'amiFast',amiPAMFast,'amiValidated',amiPAMValidated);
+    c.baseline = struct('x',xPAM(:),'amiFast',amiPAMFast, ...
+        'amiValidated',amiPAMValidated);
     c.starts = starts;
     c.optimizer = saOut;
     if isfield(c.optimizer,'bestRun'), c.optimizer = rmfield(c.optimizer,'bestRun'); end
@@ -374,11 +343,12 @@ end
 
 function summary = build_summary(caseGrid,defs,nRep,amiPAMValidated,maxIter)
     nDefs = numel(defs);
-
-    fields = {'amiValidated','gainBits','conv95','conv99','wallSeconds', ...
+    metricNames = {'amiValidated','gainBits','conv95','conv99','wallSeconds', ...
         'evalPerSec','acceptanceRate','restartStd','maxValidationGap','selectionChanged'};
-    for f = 1:numel(fields)
-        raw.(fields{f}) = nan(nDefs,nRep);
+
+    raw = struct();
+    for f = 1:numel(metricNames)
+        raw.(metricNames{f}) = nan(nDefs,nRep);
     end
 
     for iD = 1:nDefs
@@ -419,74 +389,55 @@ function summary = build_summary(caseGrid,defs,nRep,amiPAMValidated,maxIter)
 end
 
 
-function figs = make_plots(bundle,caseGrid,figDir,saveFigures)
+function figureFiles = make_plots(bundle,caseGrid,figDir,saveFigures)
     sweeps = bundle.sweeps;
-    defs = bundle.definitions;
     S = bundle.summary;
     nRep = bundle.settings.nReplicates;
-    figs = {};
+    figureFiles = {};
 
-    % ------------------------------------------------------------------
-    % Figure 1: publication-oriented performance sensitivity.
-    % ------------------------------------------------------------------
     f1 = figure('Name','SA hyperparameters - validated performance','Color','w');
     tl = tiledlayout(4,2,'TileSpacing','compact','Padding','compact');
     title(tl,sprintf('SA sensitivity: M=%d, SNR=%.1f dB, \\sigma_X^2=%.3f, d_{min}=%.3f', ...
         bundle.case.M,bundle.case.SNR_dB,bundle.case.sigma_X_sq,bundle.case.minGap));
-
     for s = 1:numel(sweeps)
         idx = sweeps(s).definitionIndices;
         x = sweeps(s).values;
-
         nexttile;
         errorbar(x,S.mean.amiValidated(idx),S.std.amiValidated(idx),'o-','LineWidth',1.3);
         grid on; xlabel(sweeps(s).axisLabel); ylabel('Validated AMI [bits/symbol]');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: AMI',sweeps(s).displayName));
-
         nexttile;
         errorbar(x,S.mean.gainBits(idx),S.std.gainBits(idx),'o-','LineWidth',1.3);
         grid on; xlabel(sweeps(s).axisLabel); ylabel('Shaping gain [bits/symbol]');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: gain',sweeps(s).displayName));
     end
-    figs{end+1} = f1;
 
-    % ------------------------------------------------------------------
-    % Figure 2: convergence speed and wall-clock cost.
-    % ------------------------------------------------------------------
     f2 = figure('Name','SA hyperparameters - convergence and runtime','Color','w');
     tl = tiledlayout(4,2,'TileSpacing','compact','Padding','compact');
     title(tl,'Convergence speed and computational cost');
     for s = 1:numel(sweeps)
         idx = sweeps(s).definitionIndices;
         x = sweeps(s).values;
-
         nexttile;
         errorbar(x,S.mean.conv99(idx),S.std.conv99(idx),'o-','LineWidth',1.3);
         hold on; yline(bundle.settings.saMaxIter,'--','Iteration budget'); hold off;
         grid on; xlabel(sweeps(s).axisLabel); ylabel('Iteration reaching 99% improvement');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: k_{99}',sweeps(s).displayName));
-
         nexttile;
         errorbar(x,S.mean.wallSeconds(idx),S.std.wallSeconds(idx),'o-','LineWidth',1.3);
         grid on; xlabel(sweeps(s).axisLabel); ylabel('Wall time per case [s]');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: runtime',sweeps(s).displayName));
     end
-    figs{end+1} = f2;
 
-    % ------------------------------------------------------------------
-    % Figure 3: mean winner best-so-far FAST AMI trajectories.
-    % These curves diagnose SA convergence; final reported AMI remains the
-    % independent validated value used in Figures 1-2 and in the tables.
-    % ------------------------------------------------------------------
     f3 = figure('Name','SA hyperparameters - convergence trajectories','Color','w');
     tl = tiledlayout(2,2,'TileSpacing','compact','Padding','compact');
     title(tl,'Best-so-far fast-objective convergence trajectories');
-    commonIter = unique([0:bundle.settings.historyEvery:bundle.settings.saMaxIter, bundle.settings.saMaxIter]);
-
+    commonIter = unique([0:bundle.settings.historyEvery:bundle.settings.saMaxIter, ...
+        bundle.settings.saMaxIter]);
     for s = 1:numel(sweeps)
         nexttile; hold on;
         idx = sweeps(s).definitionIndices;
@@ -502,38 +453,38 @@ function figs = make_plots(bundle,caseGrid,figDir,saveFigures)
         grid on; xlabel('SA iteration'); ylabel('Best-so-far fast AMI');
         title(sweeps(s).displayName); legend('Location','southeast');
     end
-    figs{end+1} = f3;
 
-    % ------------------------------------------------------------------
-    % Figure 4: acceptance behavior and raw evaluator throughput.
-    % ------------------------------------------------------------------
     f4 = figure('Name','SA hyperparameters - acceptance and throughput','Color','w');
     tl = tiledlayout(4,2,'TileSpacing','compact','Padding','compact');
     title(tl,'Search dynamics and evaluator throughput');
     for s = 1:numel(sweeps)
         idx = sweeps(s).definitionIndices;
         x = sweeps(s).values;
-
         nexttile;
         errorbar(x,S.mean.acceptanceRate(idx),S.std.acceptanceRate(idx),'o-','LineWidth',1.3);
         hold on; yline(0.20,'--'); yline(0.60,'--'); hold off;
         ylim([0 1]); grid on; xlabel(sweeps(s).axisLabel); ylabel('Winner acceptance rate');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: acceptance',sweeps(s).displayName));
-
         nexttile;
         errorbar(x,S.mean.evalPerSec(idx),S.std.evalPerSec(idx),'o-','LineWidth',1.3);
         grid on; xlabel(sweeps(s).axisLabel); ylabel('Fast objective eval/s');
-        if strcmp(sweeps(s).field,'T0') || strcmp(sweeps(s).field,'Tf'), set(gca,'XScale','log'); end
+        apply_log_axis_if_needed(sweeps(s).field);
         title(sprintf('%s: throughput',sweeps(s).displayName));
     end
-    figs{end+1} = f4;
 
     if saveFigures
-        names = {'validated_performance','convergence_runtime','convergence_trajectories','acceptance_throughput'};
+        if ~exist(figDir,'dir'), mkdir(figDir); end
+        figs = {f1,f2,f3,f4};
+        names = {'validated_performance','convergence_runtime', ...
+            'convergence_trajectories','acceptance_throughput'};
         for k = 1:numel(figs)
-            exportgraphics(figs{k},fullfile(figDir,[names{k} '.png']),'Resolution',220);
-            savefig(figs{k},fullfile(figDir,[names{k} '.fig']));
+            pngPath = fullfile(figDir,[names{k} '.png']);
+            figPath = fullfile(figDir,[names{k} '.fig']);
+            exportgraphics(figs{k},pngPath,'Resolution',220);
+            savefig(figs{k},figPath);
+            figureFiles{end+1} = pngPath; %#ok<AGROW>
+            figureFiles{end+1} = figPath; %#ok<AGROW>
         end
     end
 end
@@ -550,11 +501,11 @@ function print_summary(bundle)
     for s = 1:numel(bundle.sweeps)
         sw = bundle.sweeps(s);
         fprintf('\n--- %s ---\n',sw.displayName);
-        fprintf('%13s | validated AMI      | gain               | delta vs base | k99       | runtime[s] | eval/s    | accept | restart std | max F-V gap\n',sw.field);
-        fprintf('%s\n',repmat('-',1,145));
+        fprintf('%13s | validated AMI      | gain               | delta vs base | k99    | runtime[s] | eval/s   | accept | restart std | max F-V gap\n',sw.field);
+        fprintf('%s\n',repmat('-',1,142));
         for j = 1:numel(sw.values)
             i = sw.definitionIndices(j);
-            fprintf('%13.6g | %.6f +/- %.2e | %+.6f +/- %.2e | %+ .3e | %7.1f | %10.1f | %9.2f | %.3f | %.3e | %.3e\n', ...
+            fprintf('%13.6g | %.6f +/- %.2e | %+.6f +/- %.2e | %+.3e | %6.1f | %10.1f | %8.2f | %.3f | %.3e | %.3e\n', ...
                 sw.values(j),S.mean.amiValidated(i),S.std.amiValidated(i), ...
                 S.mean.gainBits(i),S.std.gainBits(i),S.meanDeltaAMIvsBaseline(i), ...
                 S.mean.conv99(i),S.mean.wallSeconds(i),S.mean.evalPerSec(i), ...
@@ -566,12 +517,11 @@ function print_summary(bundle)
     [fastConv,fastIdx] = min(S.mean.conv99);
     fprintf('\nBest observed mean validated AMI: %.9f (%s)\n',bestAMI,defs(bestIdx).name);
     fprintf('Fastest observed mean k99: %.1f iterations (%s)\n',fastConv,defs(fastIdx).name);
-    fprintf('NOTE: these are descriptive observations, not proof of globally optimal SA hyperparameters.\n');
+    fprintf('NOTE: descriptive sensitivity results do not prove globally optimal SA hyperparameters.\n');
 end
 
 
 function k = convergence_iteration(history,initialMI,bestMI,fraction)
-    if nargin < 4, fraction = 0.99; end
     improvement = bestMI-initialMI;
     if ~(isfinite(improvement) && improvement>0)
         k = 0;
@@ -586,9 +536,9 @@ end
 function sw = make_sweep(field,displayName,values,defs,base)
     idx = nan(size(values));
     for k = 1:numel(values)
-        d = base;
+        d = strip_identity(base);
         d.(field) = values(k);
-        idx(k) = find_definition(defs,d);
+        idx(k) = find_definition(defs,d,true);
     end
     sw = struct('field',field,'displayName',displayName,'values',values, ...
         'definitionIndices',idx,'axisLabel',axis_label(field));
@@ -598,9 +548,16 @@ end
 function defs = add_unique_def(defs,d,name)
     idx = find_definition(defs,d,false);
     if ~isnan(idx), return; end
-    d.id = numel(defs)+1;
-    d.name = name;
-    defs(end+1) = d;
+    entry = struct('id',numel(defs)+1,'name',name, ...
+        'T0',double(d.T0),'Tf',double(d.Tf), ...
+        'baseStd0',double(d.baseStd0),'itersPerTemp',double(d.itersPerTemp));
+    defs(end+1) = entry;
+end
+
+
+function d = strip_identity(s)
+    d = struct('T0',double(s.T0),'Tf',double(s.Tf), ...
+        'baseStd0',double(s.baseStd0),'itersPerTemp',double(s.itersPerTemp));
 end
 
 
@@ -616,7 +573,8 @@ function idx = find_definition(defs,d,mustExist)
         end
     end
     if mustExist
-        error('sim_sa_hyperparam_sensitivity:MissingDefinition','Internal sweep definition was not found.');
+        error('sim_sa_hyperparam_sensitivity:MissingDefinition', ...
+            'Internal sweep definition was not found.');
     end
 end
 
@@ -637,6 +595,13 @@ function label = axis_label(field)
 end
 
 
+function apply_log_axis_if_needed(field)
+    if strcmp(field,'T0') || strcmp(field,'Tf')
+        set(gca,'XScale','log');
+    end
+end
+
+
 function validate_baseline_membership(o)
     if ~any_close(o.T0Vec,o.BaselineT0)
         error('sim_sa_hyperparam_sensitivity:BaselineMissing','T0Vec must contain BaselineT0.');
@@ -650,22 +615,11 @@ function validate_baseline_membership(o)
     if ~any_close(o.ItersPerTempVec,o.BaselineItersPerTemp)
         error('sim_sa_hyperparam_sensitivity:BaselineMissing','ItersPerTempVec must contain BaselineItersPerTemp.');
     end
-    if any(double(o.TfVec) >= max(double(o.T0Vec))*1000)
-        % No hard prohibition is needed, but pathological inputs deserve an
-        % explicit guard through the per-definition T0>Tf check below.
-    end
 
-    allT0 = unique([double(o.T0Vec(:).') double(o.BaselineT0)]);
-    allTf = unique([double(o.TfVec(:).') double(o.BaselineTf)]);
-    if min(allT0) <= 0 || min(allTf) <= 0
-        error('sim_sa_hyperparam_sensitivity:Temperature','Temperatures must be positive.');
-    end
-
-    % Every actual OFAT combination must cool, rather than heat.
     if any(double(o.TfVec) >= double(o.BaselineT0)) || ...
             any(double(o.T0Vec) <= double(o.BaselineTf))
         error('sim_sa_hyperparam_sensitivity:TemperatureOrder', ...
-            'Every tested SA setting must satisfy T0 > Tf.');
+            'Every OFAT temperature setting must satisfy T0 > Tf.');
     end
 end
 
@@ -679,12 +633,16 @@ end
 function tf = positive_scalar(v)
     tf = isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v>0;
 end
+
 function tf = positive_integer(v)
     tf = positive_scalar(v) && mod(v,1)==0;
 end
+
 function tf = positive_vector(v)
-    tf = isnumeric(v) && isvector(v) && ~isempty(v) && all(isfinite(v)) && all(isreal(v)) && all(v>0);
+    tf = isnumeric(v) && isvector(v) && ~isempty(v) && ...
+        all(isfinite(v)) && all(isreal(v)) && all(v>0);
 end
+
 function tf = positive_integer_vector(v)
     tf = positive_vector(v) && all(mod(v,1)==0);
 end
