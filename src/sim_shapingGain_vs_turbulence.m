@@ -1,386 +1,218 @@
-function sim_shapingGain_vs_turbulence()
-%   Fixed SNR, sweeps turbulence levels (sigma_X^2), optimizes 1D PAM via SA.
+function bundle = sim_shapingGain_vs_turbulence(M, SNR_dB, varargin)
+%SIM_SHAPINGGAIN_VS_TURBULENCE  Validated GS gain versus turbulence.
 %
-%   SA objective: AMI_functions.AMI_noCSI_fast_grid  (1D GH mixture + trapz on pre-built grid)
-%     - Avoids triple-GH correlation bug that inflates MI at high SNR
-%     - y-grid built ONCE per turbulence level, reused across all SA iters
+%   bundle = sim_shapingGain_vs_turbulence(M, SNR_dB)
 %
-%   Validation: AMI_functions.AMI_noCSI_validate  (adaptive integral via calculate_Py_given_x)
-%     - Fully independent method (MATLAB's integral() — adaptive, high precision)
+% Uses canonical configuration, Commit-C validated multi-start selection,
+% deterministic seeds and the same result schema as sim_AMI_vs_SNR.m.
+%
+% Defaults preserve the original focused experiment: M=16, SNR=20 dB.
 
-    clear; clc; close all;
+    if nargin < 1 || isempty(M), M = 16; end
+    if nargin < 2 || isempty(SNR_dB), SNR_dB = 20; end
 
-    %% ====================================================================
-    %  1. SIMULATION PARAMETERS
-    % =====================================================================
-    M       = 16;
-    P_avg   = 1;
-    SNR_dB  = 20;       
+    p = inputParser;
+    p.FunctionName = mfilename;
+    addRequired(p, 'M', @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=2 && mod(v,1)==0);
+    addRequired(p, 'SNR_dB', @(v) isnumeric(v) && isscalar(v) && isfinite(v));
+    addParameter(p, 'P_avg', 1, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>0);
+    addParameter(p, 'TurbulenceVec', [0 0.1 0.2 0.3], @(v) isnumeric(v) && isvector(v) && all(isfinite(v)) && all(v>=0));
+    addParameter(p, 'ghN_h', 40, @(v) isnumeric(v) && isscalar(v) && v>=2 && mod(v,1)==0);
+    addParameter(p, 'saMaxIter', 50000, @(v) isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0);
+    addParameter(p, 'saNStarts', 6, @(v) isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0);
+    addParameter(p, 'saUseParallel', true, @(v) islogical(v) && isscalar(v));
+    addParameter(p, 'minGap', 0.05, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=0);
+    addParameter(p, 'pinZero', true, @(v) islogical(v) && isscalar(v));
+    addParameter(p, 'baseSeed', 20260928, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v>=0);
+    addParameter(p, 'historyEvery', [], @(v) isempty(v) || (isnumeric(v) && isscalar(v) && v>=1 && mod(v,1)==0));
+    addParameter(p, 'ComputeBER', false, @(v) islogical(v) && isscalar(v));
+    addParameter(p, 'ResultsRoot', fso_result_utils.default_results_root(), @(v) ischar(v) || isstring(v));
+    parse(p, M, SNR_dB, varargin{:});
+    o = p.Results;
 
-    % Turbulence levels (scintillation index)
-    sigX_levels = [0, 0.1, 0.2, 0.3];
-    level_names = ["No Turb (0)", "Very Weak (0.1)", "Weak (0.2)", "Weak-Mod (0.3)"];
-    nLevels = numel(sigX_levels);
+    M          = double(M);
+    SNR_dB     = double(SNR_dB);
+    P_avg      = double(o.P_avg);
+    sigVec     = double(o.TurbulenceVec(:).');
+    nSig       = numel(sigVec);
+    xMaxBound  = fso_result_utils.feasible_xmax_bound(M, P_avg, o.minGap, o.pinZero);
 
-    % 1D GH order for h inside fast grid evaluator
-    ghN_h = 40;
+    resultsRoot = char(o.ResultsRoot);
+    outDir = fullfile(resultsRoot, 'turbulence_sweep', sprintf('M%d_SNR%g', M, SNR_dB));
+    caseDir = fullfile(outDir, 'cases');
+    if ~exist(caseDir, 'dir'), mkdir(caseDir); end
 
-    % SA tuning
-    sa_maxIter   = 50000;
-    sa_nStarts   = 6;
-    sa_useParfor = true;
+    runMeta = fso_result_utils.run_metadata(mfilename);
+    caseResults = cell(1,nSig);
+    caseFiles   = cell(1,nSig);
 
-    sigma_n_sq = P_avg / 10^(SNR_dB/10);
+    fprintf('\n============================================================\n');
+    fprintf('IEEE revision turbulence sweep\n');
+    fprintf('M=%d | SNR=%.2f dB | Pavg=%.4g | minGap=%.4g\n', M, SNR_dB, P_avg, o.minGap);
+    fprintf('SA: %d restarts x %d iterations | restart parallelism=%d\n', ...
+        o.saNStarts, o.saMaxIter, o.saUseParallel);
+    fprintf('Results: %s\n', outDir);
+    fprintf('============================================================\n');
 
-    fprintf('╔══════════════════════════════════════════════════════════════╗\n');
-    fprintf('║   FSO Geometric Shaping  — Turbulence Sweep                 ║\n');
-    fprintf('╠══════════════════════════════════════════════════════════════╣\n');
-    fprintf('║  M=%d | P_avg=%.1f | SNR=%ddB | σ_n²=%.4f                 ║\n', M, P_avg, SNR_dB, sigma_n_sq);
-    fprintf('║  Turbulence levels: %d | SA: %d starts × %d iter           ║\n', nLevels, sa_nStarts, sa_maxIter);
-    fprintf('║  Evaluator: 1D-GH(N=%d) + trapz grid (no triple-GH)       ║\n', ghN_h);
-    fprintf('╚══════════════════════════════════════════════════════════════╝\n\n');
+    for idx = 1:nSig
+        sigma_X_sq = sigVec(idx);
+        seed = fso_result_utils.case_seed(o.baseSeed, M, SNR_dB, sigma_X_sq);
 
-    % --- Benchmark ---
-    fprintf('Benchmarking fast evaluator...\n');
-    cfg_bench = build_config(M, P_avg, SNR_dB, 0.5, ghN_h, sa_maxIter, sa_nStarts, false);
-    x_bench = define_constellation(M, P_avg, true, "mean");
-    Nrep = 50;
-    t0b = tic;
-    for rep = 1:Nrep
-        cfg_bench.AMI_Evaluator(x_bench);
-    end
-    ms_per_call = toc(t0b) / Nrep * 1000;
-    est_start = ms_per_call * sa_maxIter / 1000;
-    fprintf('  %.2f ms/call → ~%.0fs per SA start\n', ms_per_call, est_start);
-    fprintf('  Grid size: %d points\n\n', numel(cfg_bench.y_grid));
+        cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, ...
+            'ghN_h', o.ghN_h, ...
+            'xMaxBound', xMaxBound, ...
+            'saMaxIter', o.saMaxIter, ...
+            'saNStarts', o.saNStarts, ...
+            'saUseParallel', o.saUseParallel, ...
+            'minGap', o.minGap, ...
+            'pinZero', o.pinZero, ...
+            'seedInit', seed, ...
+            'logEvery', 5000, ...
+            'historyEvery', o.historyEvery);
 
-    %% ====================================================================
-    %  2. PREALLOCATE
-    % =====================================================================
-    R = struct( ...
-        'sigX',        num2cell(sigX_levels), ...
-        'x_pam',       cell(1, nLevels), ...
-        'x_opt',       cell(1, nLevels), ...
-        'mi_pam_fast', num2cell(zeros(1,nLevels)), ...
-        'mi_opt_fast', num2cell(zeros(1,nLevels)), ...
-        'mi_pam_val',  num2cell(zeros(1,nLevels)), ...
-        'mi_opt_val',  num2cell(zeros(1,nLevels)), ...
-        'gain_bits',   num2cell(zeros(1,nLevels)), ...
-        'rt_sa',       num2cell(zeros(1,nLevels)), ...
-        'rt_val',      num2cell(zeros(1,nLevels)));
+        xPAM = define_constellation(M, P_avg, true, "mean");
+        AMI_functions.assert_constellation_feasible(xPAM, cfg, 1e-10);
 
-    t_total = tic;
-    t_level_times = zeros(1, nLevels);
+        amiPAMFast = cfg.AMI_Evaluator(xPAM);
+        tBaseVal = tic;
+        amiPAMVal = cfg.AMI_Validator(xPAM);
+        baseValRuntime = toc(tBaseVal);
 
-    %% ====================================================================
-    %  3. MAIN SWEEP
-    % =====================================================================
-    for idx = 1:nLevels
-        cur_sig = sigX_levels(idx);
-        t_level = tic;
+        fprintf('\n[%d/%d] sigma_X^2=%.4f | baseline validated AMI=%.6f\n', ...
+            idx, nSig, sigma_X_sq, amiPAMVal);
 
-        eta_str = sweep_eta(idx, nLevels, t_level_times);
-        fprintf('\n╔══════════════════════════════════════════════════════════╗\n');
-        fprintf('║  [%d/%d]  σ_R² = %.2f  %-22s  %s\n', ...
-            idx, nLevels, cur_sig, level_names(idx), eta_str);
-        fprintf('╚══════════════════════════════════════════════════════════╝\n');
-        fprintf('  Elapsed: %s\n', fmt_time(toc(t_total)));
+        [saOut, starts] = sa_multistart(cfg, xPAM, ...
+            sprintf('[M%d|SNR%.1f|sig%.3f]',M,SNR_dB,sigma_X_sq));
 
-        % --- Config (builds y-grid for this turbulence level) ---
-        cfg = build_config(M, P_avg, SNR_dB, cur_sig, ...
-            ghN_h, sa_maxIter, sa_nStarts, sa_useParfor);
-        fprintf('  y-grid: %d pts [%.2f, %.2f]\n', ...
-            numel(cfg.y_grid), cfg.y_grid(1), cfg.y_grid(end));
+        xGS       = saOut.bestXValidated(:);
+        amiGSVal  = saOut.bestMIValidated;
+        amiGSFast = saOut.validatedWinnerFastMI;
 
-        % --- PAM baseline ---
-        fprintf('\n  [1/3] PAM baseline...\n');
-        x_pam = define_constellation(M, P_avg, true, "mean");
-        mi_pam_fast = cfg.AMI_Evaluator(x_pam);
-        fprintf('  ✦ PAM MI (grid-GH) = %.6f bits/sym\n', mi_pam_fast);
-
-        % --- SA Optimization ---
-        fprintf('\n  [2/3] SA (%d starts × %d iter)...\n', sa_nStarts, sa_maxIter);
-        t_sa = tic;
-        [out, sa_results] = sa_multistart(cfg, x_pam, sprintf("[sig%.1f]", cur_sig));
-        rt_sa = toc(t_sa);
-
-        x_opt       = out.bestX(:);
-        mi_opt_fast = cfg.AMI_Evaluator(x_opt);
-
-        % Per-start summary
-        fprintf('\n  SA results:\n');
-        fprintf('  %-6s %-12s %-8s\n', 'Start', 'MI(best)', 'Time');
-        fprintf('  %s\n', repmat('-', 1, 28));
-        for k = 1:numel(sa_results)
-            marker = '';
-            if sa_results(k).bestMI == out.bestMI, marker = ' ◄'; end
-            fprintf('  %-6d %-12.6f %-8s%s\n', k, ...
-                sa_results(k).bestMI, fmt_time(sa_results(k).runtime), marker);
-        end
-        fprintf('  ✦ OPT MI (grid-GH) = %.6f  |  gain = %+.4f\n', ...
-            mi_opt_fast, mi_opt_fast - mi_pam_fast);
-        fprintf('  ⏱  SA: %s\n', fmt_time(rt_sa));
-
-        % Constellation
-        fprintf('\n  Constellations:\n');
-        fprintf('    PAM: '); fprintf('%7.4f ', sort(x_pam)); fprintf('\n');
-        fprintf('    OPT: '); fprintf('%7.4f ', sort(x_opt)); fprintf('\n');
-        gaps = diff(sort(x_opt));
-        fprintf('    Gaps: '); fprintf('%6.4f ', gaps); fprintf('\n');
-        if min(gaps) < 1e-2
-            fprintf('  ⚠  min gap %.2e < 0.01 — alphabet reduction suspected\n', min(gaps));
+        berPAM = NaN;
+        berGS  = NaN;
+        if o.ComputeBER
+            berPAM = BER_functions.calculate_BER_noCSI_ML(xPAM(:), cfg);
+            berGS  = BER_functions.calculate_BER_noCSI_ML(xGS(:), cfg);
         end
 
-        % --- Validation (independent: adaptive integral + grid quadrature) ---
-        fprintf('\n  [3/3] Validation (adaptive integral)...\n');
-        t_val = tic;
+        saOutSaved = saOut;
+        if isfield(saOutSaved,'bestRun'), saOutSaved = rmfield(saOutSaved,'bestRun'); end
 
-        fprintf('    Grid quad PAM...');
-        mi_pam_val = AMI_functions.AMI_noCSI_validate(x_pam, cfg.px, cfg);
-        fprintf(' %.6f\n', mi_pam_val);
+        c = struct();
+        c.meta = runMeta;
+        c.case = struct('M',M, 'P_avg',P_avg, 'SNR_dB',SNR_dB, ...
+            'sigma_X_sq',sigma_X_sq, 'seed',seed);
+        c.config = fso_result_utils.config_snapshot(cfg);
+        c.baseline = struct('x',xPAM(:), 'amiFast',amiPAMFast, ...
+            'amiValidated',amiPAMVal, 'ber',berPAM);
+        c.starts = starts;
+        c.optimizer = saOutSaved;
+        c.winner = struct('startIndex',saOut.bestStartValidated, 'x',xGS, ...
+            'amiFast',amiGSFast, 'amiValidated',amiGSVal, 'ber',berGS);
+        c.selection = struct( ...
+            'fastWinnerIndex',saOut.bestStartFast, ...
+            'validatedWinnerIndex',saOut.bestStartValidated, ...
+            'changed',saOut.selectionChanged, ...
+            'validatedAdvantageOverFastWinner',saOut.validatedAdvantageOverFastWinner, ...
+            'meanAbsFastValidationGap',saOut.meanAbsFastValidationGap, ...
+            'maxAbsFastValidationGap',saOut.maxAbsFastValidationGap);
+        c.metrics = struct('gainBits',amiGSVal-amiPAMVal, ...
+            'fastGainBits',amiGSFast-amiPAMFast);
+        c.runtime = struct('sa',saOut.totalSARuntime, ...
+            'validation',saOut.validationTotalRuntime+baseValRuntime, ...
+            'total',saOut.totalRuntime+baseValRuntime);
 
-        fprintf('    Grid quad OPT...');
-        mi_opt_val = AMI_functions.AMI_noCSI_validate(x_opt, cfg.px, cfg);
-        fprintf(' %.6f\n', mi_opt_val);
+        caseResults{idx} = c;
+        caseFiles{idx} = fullfile(caseDir, ...
+            fso_result_utils.case_filename(M,SNR_dB,sigma_X_sq));
+        caseResult = c; %#ok<NASGU>
+        save(caseFiles{idx}, 'caseResult', '-v7.3');
 
-        rt_val = toc(t_val);
-        gain = mi_opt_val - mi_pam_val;
+        fprintf('  validated GS AMI=%.6f | gain=%+.6f | fast winner=%d | validated winner=%d\n', ...
+            amiGSVal, c.metrics.gainBits, saOut.bestStartFast, saOut.bestStartValidated);
+        fprintf('  constellation:'); fprintf(' %.6f', xGS); fprintf('\n');
+    end
 
-        % Cross-check fast vs validated
-        d_pam = abs(mi_pam_fast - mi_pam_val);
-        d_opt = abs(mi_opt_fast - mi_opt_val);
+    summary = struct();
+    summary.amiPAMFast      = nan(1,nSig);
+    summary.amiPAMValidated = nan(1,nSig);
+    summary.amiGSFast       = nan(1,nSig);
+    summary.amiGSValidated  = nan(1,nSig);
+    summary.gainBits        = nan(1,nSig);
+    summary.selectionChanged = false(1,nSig);
+    summary.meanAbsFastValidationGap = nan(1,nSig);
+    summary.maxAbsFastValidationGap  = nan(1,nSig);
+    summary.saRuntime = nan(1,nSig);
+    summary.xGS = cell(1,nSig);
+    if o.ComputeBER
+        summary.berPAM = nan(1,nSig);
+        summary.berGS  = nan(1,nSig);
+    end
 
-        fprintf('\n  ┌─ Cross-check ──────────────────────────────────┐\n');
-        fprintf('  │  PAM: fast=%.5f  validated=%.5f  Δ=%.2e │\n', ...
-            mi_pam_fast, mi_pam_val, d_pam);
-        fprintf('  │  OPT: fast=%.5f  validated=%.5f  Δ=%.2e │\n', ...
-            mi_opt_fast, mi_opt_val, d_opt);
-        fprintf('  │  ★ SHAPING GAIN (validated) = %+.4f bits     │\n', gain);
-        fprintf('  └───────────────────────────────────────────────┘\n');
-
-        if max(d_pam, d_opt) > 0.05
-            fprintf('  ⚠  Fast-vs-validated gap > 0.05 — increase ghN_h or grid density\n');
+    for idx = 1:nSig
+        c = caseResults{idx};
+        summary.amiPAMFast(idx)      = c.baseline.amiFast;
+        summary.amiPAMValidated(idx) = c.baseline.amiValidated;
+        summary.amiGSFast(idx)       = c.winner.amiFast;
+        summary.amiGSValidated(idx)  = c.winner.amiValidated;
+        summary.gainBits(idx)        = c.metrics.gainBits;
+        summary.selectionChanged(idx)= c.selection.changed;
+        summary.meanAbsFastValidationGap(idx) = c.selection.meanAbsFastValidationGap;
+        summary.maxAbsFastValidationGap(idx)  = c.selection.maxAbsFastValidationGap;
+        summary.saRuntime(idx)       = c.runtime.sa;
+        summary.xGS{idx}             = c.winner.x;
+        if o.ComputeBER
+            summary.berPAM(idx) = c.baseline.ber;
+            summary.berGS(idx)  = c.winner.ber;
         end
-        fprintf('  ⏱  Validation: %s\n', fmt_time(rt_val));
-
-        % --- Store ---
-        R(idx).x_pam       = x_pam(:);
-        R(idx).x_opt       = x_opt(:);
-        R(idx).mi_pam_fast = mi_pam_fast;
-        R(idx).mi_opt_fast = mi_opt_fast;
-        R(idx).mi_pam_val  = mi_pam_val;
-        R(idx).mi_opt_val  = mi_opt_val;
-        R(idx).gain_bits   = gain;
-        R(idx).rt_sa       = rt_sa;
-        R(idx).rt_val      = rt_val;
-
-        t_level_times(idx) = toc(t_level);
-
-        % Running progress
-        fprintf('\n  ── Progress (%d/%d) ──\n', idx, nLevels);
-        for ii = 1:idx
-            fprintf('    σ²_R=%.1f: PAM=%.4f  OPT=%.4f  Gain=%+.4f\n', ...
-                sigX_levels(ii), R(ii).mi_pam_val, R(ii).mi_opt_val, R(ii).gain_bits);
-        end
-        fprintf('  Level: %s  |  Total: %s', ...
-            fmt_time(t_level_times(idx)), fmt_time(toc(t_total)));
-        if idx < nLevels
-            fprintf('  |  %s', sweep_eta(idx+1, nLevels, t_level_times));
-        end
-        fprintf('\n');
     end
 
-    total_time = toc(t_total);
+    bundle = struct();
+    bundle.meta       = runMeta;
+    bundle.experiment = 'shaping_gain_vs_turbulence';
+    bundle.axes       = struct('M',M, 'P_avg',P_avg, 'SNR_dB',SNR_dB, 'sigma_X_sq',sigVec);
+    bundle.settings   = struct( ...
+        'ghN_h',o.ghN_h, 'saMaxIter',o.saMaxIter, 'saNStarts',o.saNStarts, ...
+        'minGap',o.minGap, 'pinZero',o.pinZero, 'baseSeed',o.baseSeed, ...
+        'historyEvery',o.historyEvery, 'computeBER',o.ComputeBER, ...
+        'xMaxBound',xMaxBound);
+    bundle.caseFiles = caseFiles;
+    bundle.summary   = summary;
 
-    %% ====================================================================
-    %  4. SUMMARY TABLE
-    % =====================================================================
-    fprintf('\n\n');
-    fprintf('╔═══════════════════════════════════════════════════════════════════════════════╗\n');
-    fprintf('║                 RESULTS SUMMARY  (M=%d, SNR=%d dB)                  ║\n', M, SNR_dB);
-    fprintf('╠═════════╦═══════════╦═══════════╦═══════════╦═══════════╦═════════╦══════════╣\n');
-    fprintf('║  σ_R²   ║ PAM(fast) ║ OPT(fast) ║ PAM(val)  ║ OPT(val)  ║  Gain   ║ SA time  ║\n');
-    fprintf('╠═════════╬═══════════╬═══════════╬═══════════╬═══════════╬═════════╬══════════╣\n');
-    for idx = 1:nLevels
-        fprintf('║  %5.2f  ║  %.4f   ║  %.4f   ║  %.4f   ║  %.4f   ║ %+.4f ║ %7s  ║\n', ...
-            R(idx).sigX, R(idx).mi_pam_fast, R(idx).mi_opt_fast, ...
-            R(idx).mi_pam_val, R(idx).mi_opt_val, R(idx).gain_bits, fmt_time(R(idx).rt_sa));
+    bundlePath = fullfile(outDir, sprintf('shapingGain_M%d_SNR%g.mat',M,SNR_dB));
+    save(bundlePath, 'bundle', '-v7.3');
+
+    fprintf('\nValidated summary\n');
+    fprintf(' sigma_X^2 | PAM AMI | GS AMI | gain | selection changed\n');
+    for idx = 1:nSig
+        fprintf('   %7.4f | %.6f | %.6f | %+.6f | %d\n', ...
+            sigVec(idx), summary.amiPAMValidated(idx), ...
+            summary.amiGSValidated(idx), summary.gainBits(idx), ...
+            summary.selectionChanged(idx));
     end
-    fprintf('╚═════════╩═══════════╩═══════════╩═══════════╩═══════════╩═════════╩══════════╝\n');
-    fprintf('\nTotal: %s (%.1f min)\n', fmt_time(total_time), total_time/60);
+    fprintf('Saved summary bundle: %s\n', bundlePath);
 
-    %% ====================================================================
-    %  5. FIGURE 1: CONSTELLATION SUBPLOTS
-    % =====================================================================
-    nCols = min(3, nLevels);
-    nRows = ceil(nLevels / nCols);
+    plot_bundle(bundle);
+end
 
-    fig1 = figure('Name', 'Constellation Comparison', 'Color', 'w', ...
-        'Units', 'normalized', 'Position', [0.02 0.15 0.96 0.75]);
 
-    for idx = 1:nLevels
-        subplot(nRows, nCols, idx);
-        hold on; grid on; box on;
+function plot_bundle(bundle)
+    sig = bundle.axes.sigma_X_sq;
+    S = bundle.summary;
 
-        x_pam_s = sort(R(idx).x_pam);
-        x_opt_s = sort(R(idx).x_opt);
+    figure('Name','Validated AMI vs turbulence','Color','w');
+    plot(sig, S.amiPAMValidated, '--o', 'LineWidth',1.5, 'DisplayName','Uniform PAM');
+    hold on; grid on; box on;
+    plot(sig, S.amiGSValidated, '-s', 'LineWidth',1.8, 'DisplayName','GS (validated winner)');
+    xlabel('Normalized intensity variance \sigma_X^2');
+    ylabel('AMI [bits/symbol]');
+    title(sprintf('M=%d, SNR=%.1f dB',bundle.axes.M,bundle.axes.SNR_dB));
+    legend('Location','best');
 
-        stem(x_pam_s, ones(size(x_pam_s)), 'bo', ...
-            'MarkerSize', 8, 'LineWidth', 1.5, 'MarkerFaceColor', 'none');
-        stem(x_opt_s, 0.5*ones(size(x_opt_s)), 'rx', ...
-            'MarkerSize', 10, 'LineWidth', 2.0);
-
-        ylim([-0.1, 1.4]);
-        yticks([0.5, 1.0]); yticklabels({'Optimized', 'PAM'});
-        xlabel('Intensity level');
-        title(sprintf('\\sigma_R^2 = %.1f\nGain = %+.3f bits', ...
-            R(idx).sigX, R(idx).gain_bits), 'FontSize', 10);
-
-        xl = xlim;
-        text(xl(2)*0.95, 1.3, sprintf('PAM: %.3f', R(idx).mi_pam_val), ...
-            'FontSize', 8, 'HorizontalAlignment', 'right', 'Color', 'b');
-        text(xl(2)*0.95, 1.15, sprintf('OPT: %.3f', R(idx).mi_opt_val), ...
-            'FontSize', 8, 'HorizontalAlignment', 'right', 'Color', 'r');
-
-        if idx == 1
-            legend('Uniform PAM', 'GS Optimized', 'Location', 'northwest', 'FontSize', 7);
-        end
-        hold off;
-    end
-    sgtitle(sprintf('Geometric Shaping — M=%d, SNR=%d dB', M, SNR_dB), ...
-        'FontSize', 13, 'FontWeight', 'bold');
-
-    %% ====================================================================
-    %  6. FIGURE 2: AMI + GAIN SUMMARY
-    % =====================================================================
-    fig2 = figure('Name', 'AMI Summary', 'Color', 'w', ...
-        'Units', 'normalized', 'Position', [0.1 0.1 0.75 0.7]);
-
-    subplot(1,2,1); hold on; grid on; box on;
-    sigX_vec = [R.sigX]; pam_v = [R.mi_pam_val]; opt_v = [R.mi_opt_val];
-
-    plot(sigX_vec, pam_v, 'b--o', 'LineWidth', 1.8, 'MarkerSize', 8, ...
-        'MarkerFaceColor', 'b', 'DisplayName', 'Uniform PAM');
-    plot(sigX_vec, opt_v, 'r-s', 'LineWidth', 2.0, 'MarkerSize', 9, ...
-        'MarkerFaceColor', 'r', 'DisplayName', 'GS Optimized');
-    yline(log2(M), 'k:', sprintf('log_2(%d)', M), ...
-        'LabelVerticalAlignment', 'bottom', 'HandleVisibility', 'off');
-
-    xlabel('\sigma_R^2 (Rytov Variance)'); ylabel('AMI [bits/symbol]');
-    title('AMI vs Turbulence'); legend('Location', 'southwest');
-    xlim([min(sigX_vec)-0.05, max(sigX_vec)+0.1]);
-
-    subplot(1,2,2); hold on; grid on; box on;
-    gv = [R.gain_bits];
-    b = bar(1:nLevels, gv, 0.6); b.FaceColor = 'flat';
-    for k = 1:nLevels
-        if gv(k)>0.01, b.CData(k,:)=[0.85 0.33 0.10];
-        else,          b.CData(k,:)=[0.5 0.5 0.5]; end
-    end
-    xtl = arrayfun(@(v)sprintf('%.1f',v), sigX_levels, 'Uni', false);
-    xticks(1:nLevels); xticklabels(xtl);
-    xlabel('\sigma_R^2'); ylabel('Shaping Gain [bits/sym]');
-    title('Shaping Gain (OPT - PAM)');
-    for k=1:nLevels
-        text(k, gv(k)+0.005, sprintf('%+.3f',gv(k)), ...
-            'HorizontalAlignment','center','FontSize',9,'FontWeight','bold');
-    end
-    sgtitle(sprintf('GS Summary — M=%d, SNR=%d dB', M, SNR_dB), ...
-        'FontSize', 13, 'FontWeight', 'bold');
-
-    %% ====================================================================
-    %  7. FIGURE 3: RUNTIME
-    % =====================================================================
-    fig3 = figure('Name', 'Runtime', 'Color', 'w', ...
-        'Units', 'normalized', 'Position', [0.25 0.2 0.5 0.5]);
-    bh = bar(1:nLevels, [[R.rt_sa];[R.rt_val]]', 'grouped');
-    bh(1).FaceColor = [0 0.45 0.74]; bh(2).FaceColor = [0.47 0.67 0.19];
-    xticks(1:nLevels); xticklabels(xtl);
-    xlabel('\sigma_R^2'); ylabel('Time [s]');
-    title(sprintf('Runtime (Total: %s)', fmt_time(total_time)));
-    legend('SA','Validation','Location','northwest');
+    figure('Name','Validated shaping gain vs turbulence','Color','w');
+    plot(sig, S.gainBits, '-o', 'LineWidth',1.8);
     grid on; box on;
-
-    fprintf('\n✓ Done.\n');
-end
-
-
-% =========================================================================
-%  BUILD CONFIG
-% =========================================================================
-function cfg = build_config(M, P_avg, SNR_dB, sigma_X_sq, ...
-        ghN_h, sa_maxIter, sa_nStarts, sa_useParfor)
-
-    cfg = struct();
-    cfg.M          = M;
-    cfg.P_avg      = P_avg;
-    cfg.SNR_dB     = SNR_dB;
-    cfg.sigma_X_sq = sigma_X_sq;
-    cfg.sigma_n_sq = P_avg / (10^(SNR_dB / 10));
-    cfg.R          = 1;
-
-    % Log-normal fading (scintillation index convention)
-    cfg.sig_t = sqrt(log(1 + sigma_X_sq));
-    cfg.mu_t  = -0.5 * cfg.sig_t^2;
-
-    cfg.px = ones(M, 1) / M;
-
-    % --- Pre-build y-grid for this turbulence level ---
-    % Use generous x_max bound 
-    x_max_bound = 5;   % generous for mean(x)=1, M=8
-    cfg.ghN_h  = ghN_h;
-    cfg.y_grid = AMI_functions.build_noCSI_y_grid(cfg, x_max_bound);
-
-    % SA
-    sa = struct();
-    sa.maxIter      = sa_maxIter;
-    sa.itersPerTemp = 50;
-    sa.T0           = 0.4;
-    sa.Tf           = 1e-3;
-    sa.nBlocks      = ceil(sa.maxIter / sa.itersPerTemp);
-    sa.coolingRate   = exp(log(sa.Tf/sa.T0) / sa.nBlocks);
-
-    sa.baseStd0 = 0.15; sa.baseStdMin = 1e-3; sa.baseStdMax = 0.5;
-    sa.targetAccLo = 0.20; sa.targetAccHi = 0.60;
-    sa.baseStdGrow = 1.25; sa.baseStdShrink = 0.80;
-
-    sa.enforce_sort = true; sa.imdd_mode = true;
-    sa.powerConstraint = "mean"; sa.enforce_power = true;
-    sa.minGap = 0.05; sa.projectIters = 2;
-
-    sa.nStarts = sa_nStarts; sa.useParallel = sa_useParfor;
-    sa.numWorkers = []; sa.closePoolWhenDone = false;
-
-    % Progress logging: every 5000 iter 
-    sa.logEvery = 5000;
-
-    cfg.SA = sa;
-
-    % --- Objective: grid-based evaluator ---
-    y_grid_local = cfg.y_grid;
-    ghN_local    = ghN_h;
-    cfg.AMI_Evaluator = @(x_in) eval_fast(x_in, cfg, ghN_local, y_grid_local);
-end
-
-
-function mi = eval_fast(x_in, cfg, ghN_h, y_grid)
-    x  = AMI_functions.project_constellation_1D(x_in, cfg);
-    mi = AMI_functions.AMI_noCSI_fast_grid(x, cfg.px, cfg, ghN_h, y_grid);
-end
-
-
-% =========================================================================
-%  HELPERS
-% =========================================================================
-function s = fmt_time(sec)
-    if sec < 60,       s = sprintf('%.1fs', sec);
-    elseif sec < 3600, s = sprintf('%dm%02.0fs', floor(sec/60), mod(sec,60));
-    else,              s = sprintf('%dh%02dm', floor(sec/3600), floor(mod(sec,3600)/60));
-    end
-end
-
-function s = sweep_eta(idx, nLevels, times)
-    done = times(1:idx-1); done = done(done>0);
-    if isempty(done), s = 'ETA --'; return; end
-    s = sprintf('ETA ~%s', fmt_time(mean(done)*(nLevels-idx+1)));
+    xlabel('Normalized intensity variance \sigma_X^2');
+    ylabel('AMI gain [bits/symbol]');
+    title(sprintf('GS gain: M=%d, SNR=%.1f dB',bundle.axes.M,bundle.axes.SNR_dB));
 end
