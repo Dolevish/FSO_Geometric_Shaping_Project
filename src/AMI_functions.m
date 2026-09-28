@@ -1,11 +1,10 @@
 classdef AMI_functions
-%AMI_FUNCTIONS  
+%AMI_FUNCTIONS  Shared AMI and constellation-projection utilities.
 
 methods(Static)
 
 function mi_bits = AMI_noCSI_fast_grid(x, px, params, ghN_h, y_grid)
 %AMI_NOCSI_FAST_GRID  Fast no-CSI AMI via 1D GH mixture + grid quadrature.
-
 
 if nargin < 4 || isempty(ghN_h),  ghN_h = 40; end
 if nargin < 5 || isempty(y_grid)
@@ -96,39 +95,226 @@ end
 % =========================================================================
 
 function x = project_constellation_1D(x_in, cfg)
-%PROJECT_CONSTELLATION_1D  Sort, IM/DD shift, min-gap, power constraint.
+%PROJECT_CONSTELLATION_1D  Project a 1-D constellation onto the feasible set.
+%
+% For the IM/DD + average-intensity case used by this project, the
+% projection simultaneously enforces:
+%   1) sorted constellation levels,
+%   2) non-negativity,
+%   3) optional x(1)=0 anchoring (cfg.SA.pinZero),
+%   4) adjacent spacing >= cfg.SA.minGap,
+%   5) mean(x) = cfg.P_avg.
+%
+% The implementation is idempotent (up to floating-point precision):
+%       P(P(x)) = P(x)
+% which is important because an objective evaluator must not silently change
+% the constellation being scored.
+%
+% For the mean-power IM/DD case, write
+%       x_i = (i-1)*d_min + q_i,
+% where q_i is non-negative and non-decreasing.  The fixed spacing skeleton
+% consumes mean power ((M-1)*d_min)/2; only q is rescaled to use the remaining
+% power budget.  Therefore power normalization cannot destroy the min-gap.
+
+    if ~isfield(cfg,'SA')
+        error('AMI_functions:MissingSAConfig', 'cfg.SA is required.');
+    end
+    if ~isfield(cfg,'P_avg') || ~(isscalar(cfg.P_avg) && isfinite(cfg.P_avg) && cfg.P_avg > 0)
+        error('AMI_functions:BadAveragePower', 'cfg.P_avg must be a finite positive scalar.');
+    end
+
     sa = cfg.SA;
     x  = real(x_in(:));
 
-    if ~isfield(sa,'minGap')       || isempty(sa.minGap),       sa.minGap = 0;       end
-    if ~isfield(sa,'projectIters') || isempty(sa.projectIters)
-        sa.projectIters = max(1, double(sa.minGap > 0) + 1);
+    if isempty(x) || any(~isfinite(x))
+        error('AMI_functions:BadConstellation', ...
+            'Constellation must be non-empty and contain only finite values.');
     end
 
-    minGap = max(0, sa.minGap);
-    nIters = max(1, round(sa.projectIters));
+    % Backward-compatible defaults for existing scripts.
+    if ~isfield(sa,'minGap') || isempty(sa.minGap), sa.minGap = 0; end
+    if ~isfield(sa,'enforce_sort') || isempty(sa.enforce_sort), sa.enforce_sort = true; end
+    if ~isfield(sa,'imdd_mode') || isempty(sa.imdd_mode), sa.imdd_mode = false; end
+    if ~isfield(sa,'enforce_power') || isempty(sa.enforce_power), sa.enforce_power = true; end
+    if ~isfield(sa,'powerConstraint') || isempty(sa.powerConstraint), sa.powerConstraint = "meansquare"; end
+    if ~isfield(sa,'pinZero') || isempty(sa.pinZero), sa.pinZero = logical(sa.imdd_mode); end
 
-    for it = 1:nIters 
-        if sa.enforce_sort
-            x = sort(x, 'ascend');
+    minGap = max(0, double(sa.minGap));
+    mode   = string(sa.powerConstraint);
+    M      = numel(x);
+
+    if sa.enforce_sort
+        x = sort(x, 'ascend');
+    elseif minGap > 0
+        error('AMI_functions:MinGapNeedsSorting', ...
+            'minGap > 0 requires cfg.SA.enforce_sort = true.');
+    end
+
+    % ---------------------------------------------------------------------
+    % Project the IM/DD mean-intensity formulation used by the IEEE work.
+    % ---------------------------------------------------------------------
+    if sa.imdd_mode && sa.enforce_power && mode == "mean"
+        if sa.pinZero && M == 1
+            error('AMI_functions:InfeasiblePinnedSingleton', ...
+                'A one-point constellation cannot satisfy pinZero=true and P_avg>0 simultaneously.');
         end
-        if isfield(sa,'imdd_mode') && sa.imdd_mode
-            x = x - min(x);
+
+        % Non-negativity / optional zero anchoring.
+        if sa.pinZero
+            x = x - min(x);          % x(1)=0 after sorting
+        else
+            x = max(x, 0);
         end
+
+        % Fixed min-gap skeleton b_i=(i-1)d.
+        b = (0:M-1).' * minGap;
+        skeletonMean = mean(b);
+        residualMean = cfg.P_avg - skeletonMean;
+
+        tolPower = 100 * eps(max(1, cfg.P_avg));
+        if residualMean < -tolPower
+            error('AMI_functions:InfeasibleMinGap', ...
+                ['Infeasible constraints: minGap=%.6g with M=%d requires at least ' ...
+                 'mean power %.6g, but P_avg=%.6g.'], ...
+                minGap, M, skeletonMean, cfg.P_avg);
+        end
+        residualMean = max(0, residualMean);
+
+        % Remove the deterministic spacing skeleton.  Projection of q onto
+        % the cone q_1<=q_2<=... with q_i>=0 is implemented by a cumulative
+        % maximum.  This is deterministic and idempotent for feasible inputs.
+        q = x - b;
+        q = max(q, 0);
+        q = cummax(q);
+
+        if sa.pinZero
+            % Preserve x(1)=0 => q(1)=0.
+            q = q - q(1);
+            q = max(q, 0);
+            q = cummax(q);
+        end
+
+        if residualMean <= tolPower
+            q(:) = 0;
+        else
+            mq = mean(q);
+            if mq <= eps
+                % Degenerate input (all points collapsed).  Build a simple
+                % feasible residual instead of dividing by zero.
+                q = zeros(M,1);
+                if sa.pinZero
+                    q(2:end) = residualMean * M / (M-1);
+                else
+                    q(:) = residualMean;
+                end
+            else
+                q = q * (residualMean / mq);
+            end
+        end
+
+        x = b + q;
+
+    else
+        % -----------------------------------------------------------------
+        % Legacy/general path retained for non-IM/DD or mean-square cases.
+        % The IEEE revision uses the branch above (IM/DD + mean intensity).
+        % -----------------------------------------------------------------
+        if sa.imdd_mode
+            if sa.pinZero
+                x = x - min(x);
+            else
+                x = max(x,0);
+            end
+        end
+
         if minGap > 0
             if sa.enforce_sort, x = sort(x,'ascend'); end
             x = AMI_functions.enforce_min_gap_sorted(x, minGap);
-            if isfield(sa,'imdd_mode') && sa.imdd_mode
+            if sa.imdd_mode && sa.pinZero
                 x = x - min(x);
             end
         end
+
         if sa.enforce_power
-            x = Enforce_Power_Constraint(x, cfg.P_avg, sa.powerConstraint);
+            x = Enforce_Power_Constraint(x, cfg.P_avg, mode);
         end
     end
 
     if sa.enforce_sort
         x = sort(x, 'ascend');
+    end
+
+    % Fail fast if the projection did not produce the requested feasible set.
+    AMI_functions.assert_constellation_feasible(x, cfg, 1e-10);
+end
+
+
+function assert_constellation_feasible(x, cfg, tol)
+%ASSERT_CONSTELLATION_FEASIBLE  Validate constraints without modifying x.
+%
+% Throws a descriptive error if a constellation violates the constraints
+% encoded in cfg.  The function is intentionally side-effect free.
+
+    if nargin < 3 || isempty(tol), tol = 1e-10; end
+    x = real(x(:));
+
+    if ~isfield(cfg,'SA'), error('AMI_functions:MissingSAConfig','cfg.SA is required.'); end
+    sa = cfg.SA;
+
+    if ~isfield(sa,'minGap') || isempty(sa.minGap), sa.minGap = 0; end
+    if ~isfield(sa,'enforce_sort') || isempty(sa.enforce_sort), sa.enforce_sort = true; end
+    if ~isfield(sa,'imdd_mode') || isempty(sa.imdd_mode), sa.imdd_mode = false; end
+    if ~isfield(sa,'enforce_power') || isempty(sa.enforce_power), sa.enforce_power = true; end
+    if ~isfield(sa,'powerConstraint') || isempty(sa.powerConstraint), sa.powerConstraint = "meansquare"; end
+    if ~isfield(sa,'pinZero') || isempty(sa.pinZero), sa.pinZero = logical(sa.imdd_mode); end
+
+    if isempty(x) || any(~isfinite(x))
+        error('AMI_functions:NonFiniteConstellation','Constellation contains non-finite values.');
+    end
+
+    if isfield(cfg,'M') && ~isempty(cfg.M) && numel(x) ~= cfg.M
+        error('AMI_functions:WrongCardinality', ...
+            'Expected M=%d points but received %d.', cfg.M, numel(x));
+    end
+
+    scale = max([1; abs(x); abs(cfg.P_avg)]);
+    atol = tol * max(scale);
+
+    if sa.enforce_sort && any(diff(x) < -atol)
+        error('AMI_functions:NotSorted','Constellation is not sorted.');
+    end
+
+    if sa.imdd_mode && min(x) < -atol
+        error('AMI_functions:NegativeIntensity', ...
+            'IM/DD constellation contains a negative intensity %.6g.', min(x));
+    end
+
+    if sa.imdd_mode && sa.pinZero && abs(x(1)) > atol
+        error('AMI_functions:ZeroNotPinned', ...
+            'pinZero=true but the first level is %.6g.', x(1));
+    end
+
+    minGap = max(0,double(sa.minGap));
+    if numel(x) > 1 && minGap > 0 && min(diff(x)) < minGap - atol
+        error('AMI_functions:MinGapViolation', ...
+            'Minimum adjacent gap is %.6g but %.6g is required.', min(diff(x)), minGap);
+    end
+
+    if sa.enforce_power
+        mode = string(sa.powerConstraint);
+        switch mode
+            case "mean"
+                p = mean(x);
+            case "meansquare"
+                p = mean(x.^2);
+            otherwise
+                error('AMI_functions:BadPowerMode','Unknown power constraint mode: %s', mode);
+        end
+
+        if abs(p - cfg.P_avg) > atol
+            error('AMI_functions:PowerConstraintViolation', ...
+                'Power constraint mismatch: actual %.16g, target %.16g.', p, cfg.P_avg);
+        end
     end
 end
 
