@@ -1,17 +1,20 @@
 function [out, results] = sa_multistart(cfg, x_baseline, taskLabel)
-%SA_MULTISTART  Multi-start SA with optional PARFOR parallelism.
+%SA_MULTISTART  Multi-start SA with independent post-optimization validation.
 %
-% Commit B preserves the existing winner-selection rule (largest FAST AMI)
-% and adds observability/reproducibility metadata for every start.
+% Commit C changes the final-selection rule:
+%   1) every restart is optimized with the FAST evaluator;
+%   2) the best constellation from EVERY restart is independently validated;
+%   3) the final winner is selected by VALIDATED AMI, not fast AMI.
 %
-% - Forces PROCESS-based parallel pool only.
-% - Uses a single master seed (random by default) + substreams per start.
-% - Stores initial point, final/best solution, acceptance statistics and
-%   sampled convergence history for every restart.
-% - Prints the master seed for reproducibility/debug.
+% The function also preserves the Commit-B observability/reproducibility
+% metadata for every start and records both FAST and VALIDATED rankings.
 %
-% IMPORTANT: validated-AMi winner selection is intentionally NOT introduced
-% here; that change belongs to Commit C.
+% Returned out fields include both explicit rankings:
+%   bestStartFast, bestMIFast, bestXFast
+%   bestStartValidated, bestMIValidated, bestXValidated
+%
+% For backward compatibility with callers that use out.bestStart/out.bestMI/
+% out.bestX, these aliases now refer to the VALIDATED winner.
 
 if nargin < 3 || isempty(taskLabel)
     taskLabel = "[SA]";
@@ -20,7 +23,13 @@ if isstring(taskLabel), taskLabel = char(taskLabel); end
 
 sa = cfg.SA;
 
-% ---- Defaults (safe) ----
+if ~isfield(cfg,'AMI_Validator') || isempty(cfg.AMI_Validator)
+    error('sa_multistart:MissingValidator', ...
+        ['cfg.AMI_Validator is required for validated multi-start selection. ' ...
+         'Build cfg with build_fso_config().']);
+end
+
+% ---- Defaults ----
 if ~isfield(sa,'nStarts') || isempty(sa.nStarts), sa.nStarts = 1; end
 if ~isfield(sa,'useParallel') || isempty(sa.useParallel), sa.useParallel = false; end
 if ~isfield(sa,'seedInit'), sa.seedInit = []; end
@@ -73,7 +82,7 @@ if doPar
     end
 end
 
-% ---- Choose master seed (client-side only) ----
+% ---- Choose master seed ----
 if isempty(sa.seedInit)
     rng("shuffle");
     masterSeed = randi([0, 2^32-1], 1, 1, "uint32");
@@ -83,8 +92,7 @@ end
 
 fprintf('RNG masterSeed (Threefry) = %u\n', masterSeed);
 
-% ---- Build initial points X0 using the same masterSeed ----
-% Separate stream: SA random consumption cannot change restart initialization.
+% ---- Build restart initial points reproducibly ----
 sX0 = RandStream('Threefry','Seed',double(masterSeed));
 X0 = cell(nStarts,1);
 X0{1} = x_baseline(:);
@@ -111,7 +119,13 @@ results = repmat(struct( ...
     'x0_raw', [], ...
     'x0_projected', [], ...
     'initialMI', NaN, ...
-    'bestMI', -Inf, ...
+    'bestMI', -Inf, ...              % legacy alias: FAST AMI
+    'bestMIFast', -Inf, ...
+    'bestMIValidated', NaN, ...
+    'validationGap', NaN, ...
+    'validationRuntime', NaN, ...
+    'fastRank', NaN, ...
+    'validatedRank', NaN, ...
     'x_best', [], ...
     'finalMI', NaN, ...
     'finalX', [], ...
@@ -132,7 +146,7 @@ else
     constantStream = [];
 end
 
-% ---- Run starts ----
+% ---- Run SA starts ----
 if doPar
     parfor k = 1:nStarts
         label = sprintf("%s-%02d", taskLabel, k);
@@ -150,6 +164,7 @@ if doPar
         results(k).x0_projected        = outk.x0_projected(:);
         results(k).initialMI           = outk.initialMI;
         results(k).bestMI              = outk.bestMI;
+        results(k).bestMIFast          = outk.bestMI;
         results(k).x_best              = outk.x_best(:);
         results(k).finalMI             = outk.finalMI;
         results(k).finalX              = outk.finalX(:);
@@ -163,7 +178,6 @@ if doPar
         results(k).history             = outk.history;
     end
 else
-    % Serial: same substream scheme as parallel mode.
     s = RandStream('Threefry','Seed',double(masterSeed));
     RandStream.setGlobalStream(s);
 
@@ -182,6 +196,7 @@ else
         results(k).x0_projected        = outk.x0_projected(:);
         results(k).initialMI           = outk.initialMI;
         results(k).bestMI              = outk.bestMI;
+        results(k).bestMIFast          = outk.bestMI;
         results(k).x_best              = outk.x_best(:);
         results(k).finalMI             = outk.finalMI;
         results(k).finalX              = outk.finalX(:);
@@ -196,19 +211,95 @@ else
     end
 end
 
-% ---- Pick best (UNCHANGED in Commit B: FAST evaluator only) ----
-allMI = [results.bestMI];
-[bestMI, idx] = max(allMI);
+% -------------------------------------------------------------------------
+% Commit C: independently validate EVERY restart winner.
+% Validation is deliberately performed after all stochastic SA runs so the
+% validation stage cannot influence RNG streams or the SA trajectories.
+% -------------------------------------------------------------------------
+fprintf('%s validating %d restart winners with independent evaluator...\n', ...
+    taskLabel, nStarts);
 
+validationTotalTimer = tic;
+for k = 1:nStarts
+    AMI_functions.assert_constellation_feasible(results(k).x_best, cfg, 1e-10);
+
+    tVal = tic;
+    miVal = cfg.AMI_Validator(results(k).x_best);
+    results(k).validationRuntime = toc(tVal);
+
+    if ~(isscalar(miVal) && isfinite(miVal))
+        error('sa_multistart:InvalidValidatedAMI', ...
+            'Validation returned an invalid AMI for restart %d.', k);
+    end
+
+    results(k).bestMIValidated = miVal;
+    results(k).validationGap   = results(k).bestMIFast - miVal;
+
+    fprintf('%s validate %02d/%02d | fast=%.6f | val=%.6f | delta=%+.3e | %.2fs\n', ...
+        taskLabel, k, nStarts, results(k).bestMIFast, miVal, ...
+        results(k).validationGap, results(k).validationRuntime);
+end
+validationTotalRuntime = toc(validationTotalTimer);
+
+% ---- Rank restarts under both evaluators ----
+allFast = [results.bestMIFast];
+allVal  = [results.bestMIValidated];
+
+[~, fastOrder] = sort(allFast, 'descend');
+[~, valOrder]  = sort(allVal,  'descend');
+
+for r = 1:nStarts
+    results(fastOrder(r)).fastRank     = r;
+    results(valOrder(r)).validatedRank = r;
+end
+
+[bestMIFast, idxFast] = max(allFast);
+[bestMIVal,  idxVal]  = max(allVal);
+
+selectionChanged = idxFast ~= idxVal;
+validatedAdvantage = bestMIVal - results(idxFast).bestMIValidated;
+
+absGaps = abs([results.validationGap]);
+
+% ---- Final output ----
 out = struct();
-out.bestStart  = idx;
-out.bestMI     = bestMI;
-out.bestX      = results(idx).x_best(:);
 out.masterSeed = masterSeed;
 out.nStarts    = nStarts;
-out.totalRuntime = sum([results.runtime]);
+
+% Explicit fast-evaluator winner.
+out.bestStartFast = idxFast;
+out.bestMIFast    = bestMIFast;
+out.bestXFast     = results(idxFast).x_best(:);
+out.fastWinnerValidatedMI = results(idxFast).bestMIValidated;
+
+% Explicit validated winner: THIS is the final selected solution.
+out.bestStartValidated = idxVal;
+out.bestMIValidated    = bestMIVal;
+out.bestXValidated     = results(idxVal).x_best(:);
+out.validatedWinnerFastMI = results(idxVal).bestMIFast;
+
+% Diagnostics quantifying whether fast ranking changed the selected restart.
+out.selectionChanged = selectionChanged;
+out.validatedAdvantageOverFastWinner = validatedAdvantage;
+out.meanAbsFastValidationGap = mean(absGaps, 'omitnan');
+out.maxAbsFastValidationGap  = max(absGaps);
+out.validationTotalRuntime   = validationTotalRuntime;
+
+% SA runtime diagnostics from Commit B.
+out.totalRuntime = sum([results.runtime]) + validationTotalRuntime;
+out.totalSARuntime = sum([results.runtime]);
 out.meanAcceptanceRate = mean([results.acceptanceRate], 'omitnan');
-out.bestRun    = results(idx);
+
+% Backward-compatible aliases now deliberately point to VALIDATED winner.
+out.bestStart = out.bestStartValidated;
+out.bestMI    = out.bestMIValidated;
+out.bestX     = out.bestXValidated;
+out.bestRun   = results(idxVal);
+
+fprintf('%s selection summary | fast winner=%d | validated winner=%d | changed=%d\n', ...
+    taskLabel, idxFast, idxVal, selectionChanged);
+fprintf('%s final validated AMI=%.6f | fast-winner validated AMI=%.6f | improvement=%.3e\n', ...
+    taskLabel, bestMIVal, results(idxFast).bestMIValidated, validatedAdvantage);
 
 % ---- Optional pool cleanup ----
 if doPar && poolStartedHere && isfield(sa,'closePoolWhenDone') && sa.closePoolWhenDone

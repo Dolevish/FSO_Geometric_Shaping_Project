@@ -14,7 +14,7 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %       sigma_n^2 = P_avg^2 / 10^(SNR_dB/10).
 %
 % sigma_X_sq is the normalized intensity variance / scintillation-index
-% parameter used by the code.  With E[h]=1,
+% parameter used by the code. With E[h]=1,
 %       sigma_X_sq = Var(h).
 %
 % Name-value options:
@@ -31,8 +31,12 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %   'historyEvery'   sample SA convergence history every N iterations;
 %                    [] means one sample per temperature block (default [])
 %
+% The canonical configuration exposes two side-effect-free evaluators:
+%   cfg.AMI_Evaluator  - fast GH + y-grid objective used inside SA
+%   cfg.AMI_Validator  - independent validation evaluator used after SA
+%
 % This file is the single source of truth for channel and SA defaults in the
-% IEEE revision.  Simulation drivers should migrate to this builder instead
+% IEEE revision. Simulation drivers should migrate to this builder instead
 % of maintaining local build_config() copies.
 
     p = inputParser;
@@ -114,7 +118,7 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     sa.enforce_power   = true;
     sa.minGap          = double(o.minGap);
 
-    % Kept only for backward compatibility with older scripts.  The new
+    % Kept only for backward compatibility with older scripts. The new
     % projection is deterministic/idempotent and does not iterate projection.
     sa.projectIters = 1;
 
@@ -125,7 +129,7 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     sa.logEvery          = double(o.logEvery);
     sa.seedInit          = o.seedInit;
 
-    % Commit B: convergence/observability sampling cadence.  Empty means
+    % Commit B: convergence/observability sampling cadence. Empty means
     % simulated_annealing samples once per temperature block.
     if isempty(o.historyEvery)
         sa.historyEvery = sa.itersPerTemp;
@@ -144,12 +148,16 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
             cfg.M, cfg.SA.minGap, minRequiredMean, cfg.P_avg);
     end
 
-    % IMPORTANT: the evaluator is intentionally side-effect free. Candidate
-    % projection is the optimizer's responsibility; the evaluator only scores
-    % the constellation it receives.
+    % IMPORTANT: both evaluators are side-effect free. Candidate projection
+    % is the optimizer's responsibility; evaluators only score the exact
+    % constellation they receive.
     params = cfg;
     y_grid_local = cfg.y_grid;
     ghN_local    = cfg.ghN_h;
+
     cfg.AMI_Evaluator = @(x_in) AMI_functions.AMI_noCSI_fast_grid( ...
         x_in, params.px, params, ghN_local, y_grid_local);
+
+    cfg.AMI_Validator = @(x_in) AMI_functions.AMI_noCSI_validate( ...
+        x_in, params.px, params);
 end
