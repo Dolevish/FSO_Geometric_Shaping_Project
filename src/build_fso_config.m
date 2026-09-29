@@ -18,22 +18,32 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %       sigma_X_sq = Var(h).
 %
 % Name-value options:
-%   'R'              detector responsivity (default 1)
-%   'ghN_h'          GH order for fast fading integral (default 40)
-%   'xMaxBound'      bound used to pre-build fast y-grid (default 5)
-%   'saMaxIter'      SA iterations per start (default 10000)
-%   'saNStarts'      number of SA restarts (default 8)
-%   'saUseParallel'  enable parallel restarts (default false)
-%   'minGap'         adjacent-level minimum spacing (default 0.05)
-%   'pinZero'        enforce x(1)=0 in IM/DD projection (default true)
-%   'seedInit'       master RNG seed; [] means random (default [])
-%   'logEvery'       SA progress-print interval (default 5000)
-%   'historyEvery'   sample SA convergence history every N iterations;
-%                    [] means one sample per temperature block (default [])
+%   'R'                 detector responsivity (default 1)
+%   'FastFadingMethod'  fast fading quadrature: 'logh' or 'gh'
+%                       (default 'logh' from Commit I.3)
+%   'ghN_h'             GH order when FastFadingMethod='gh' (default 40)
+%   'loghDt'            uniform t=ln(h) spacing (default 0.01)
+%   'loghSpanSigma'     integration half-span in sigma_t (default 8)
+%   'loghYBlockSize'    y-block size for bounded memory (default 512)
+%   'xMaxBound'         bound used to pre-build fast y-grid (default 5)
+%   'saMaxIter'         SA iterations per start (default 10000)
+%   'saNStarts'         number of SA restarts (default 8)
+%   'saUseParallel'     enable parallel restarts (default false)
+%   'minGap'            adjacent-level minimum spacing (default 0.05)
+%   'pinZero'           enforce x(1)=0 in IM/DD projection (default true)
+%   'seedInit'          master RNG seed; [] means random (default [])
+%   'logEvery'          SA progress-print interval (default 5000)
+%   'historyEvery'      sample SA convergence history every N iterations;
+%                       [] means one sample per temperature block (default [])
 %
 % The canonical configuration exposes two side-effect-free evaluators:
-%   cfg.AMI_Evaluator  - fast GH + y-grid objective used inside SA
-%   cfg.AMI_Validator  - independent validation evaluator used after SA
+%   cfg.AMI_Evaluator  - fast objective used inside SA. Commit I.3 defaults
+%                        to uniform quadrature in t=ln(h), dt=0.01,
+%                        t in mu_t +/- 8 sigma_t. GH remains selectable.
+%   cfg.AMI_Validator  - independent validation evaluator used after SA.
+%
+% To reproduce the pre-I.3 fast objective explicitly use:
+%       'FastFadingMethod','gh','ghN_h',<order>
 %
 % This file is the single source of truth for channel and SA defaults in the
 % IEEE revision. Simulation drivers should migrate to this builder instead
@@ -48,7 +58,11 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     addRequired(p, 'sigma_X_sq', @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v >= 0);
 
     addParameter(p, 'R', 1, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
+    addParameter(p, 'FastFadingMethod', 'logh', @(v) ischar(v) || (isstring(v) && isscalar(v)));
     addParameter(p, 'ghN_h', 40, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 2 && mod(v,1)==0);
+    addParameter(p, 'loghDt', 0.01, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
+    addParameter(p, 'loghSpanSigma', 8, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
+    addParameter(p, 'loghYBlockSize', 512, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 1 && mod(v,1)==0);
     addParameter(p, 'xMaxBound', 5, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
 
     addParameter(p, 'saMaxIter', 10000, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 1 && mod(v,1)==0);
@@ -62,6 +76,12 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 
     parse(p, M, P_avg, SNR_dB, sigma_X_sq, varargin{:});
     o = p.Results;
+
+    fastMethod = lower(string(o.FastFadingMethod));
+    if ~ismember(fastMethod, ["logh","gh"])
+        error('build_fso_config:BadFastFadingMethod', ...
+            'FastFadingMethod must be ''logh'' or ''gh'', got ''%s''.', fastMethod);
+    end
 
     cfg = struct();
 
@@ -87,9 +107,13 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     % ---------------------------------------------------------------------
     % Fast AMI evaluator settings
     % ---------------------------------------------------------------------
-    cfg.ghN_h     = double(o.ghN_h);
-    cfg.xMaxBound = double(o.xMaxBound);
-    cfg.y_grid    = AMI_functions.build_noCSI_y_grid(cfg, cfg.xMaxBound);
+    cfg.fastFadingMethod = char(fastMethod);
+    cfg.ghN_h            = double(o.ghN_h);
+    cfg.loghDt           = double(o.loghDt);
+    cfg.loghSpanSigma    = double(o.loghSpanSigma);
+    cfg.loghYBlockSize   = double(o.loghYBlockSize);
+    cfg.xMaxBound        = double(o.xMaxBound);
+    cfg.y_grid           = AMI_functions.build_noCSI_y_grid(cfg, cfg.xMaxBound);
 
     % ---------------------------------------------------------------------
     % Simulated Annealing settings
@@ -153,10 +177,21 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     % constellation they receive.
     params = cfg;
     y_grid_local = cfg.y_grid;
-    ghN_local    = cfg.ghN_h;
 
-    cfg.AMI_Evaluator = @(x_in) AMI_functions.AMI_noCSI_fast_grid( ...
-        x_in, params.px, params, ghN_local, y_grid_local);
+    switch fastMethod
+        case "gh"
+            ghN_local = cfg.ghN_h;
+            cfg.AMI_Evaluator = @(x_in) AMI_functions.AMI_noCSI_fast_grid( ...
+                x_in, params.px, params, ghN_local, y_grid_local);
+
+        case "logh"
+            dt_local = cfg.loghDt;
+            span_local = cfg.loghSpanSigma;
+            block_local = cfg.loghYBlockSize;
+            cfg.AMI_Evaluator = @(x_in) AMI_noCSI_fast_logh_grid( ...
+                x_in, params.px, params, dt_local, span_local, ...
+                y_grid_local, block_local);
+    end
 
     cfg.AMI_Validator = @(x_in) AMI_functions.AMI_noCSI_validate( ...
         x_in, params.px, params);
