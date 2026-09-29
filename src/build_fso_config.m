@@ -25,7 +25,11 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %   'loghDt'            uniform t=ln(h) spacing (default 0.01)
 %   'loghSpanSigma'     integration half-span in sigma_t (default 8)
 %   'loghYBlockSize'    y-block size for bounded memory (default 512)
-%   'xMaxBound'         bound used to pre-build fast y-grid (default 5)
+%   'YGridMode'         'fixed-bound' or 'candidate-adaptive'
+%                       (default 'fixed-bound'; Commit I.6 keeps historical
+%                       behavior until optimizer-level A/B validation passes)
+%   'YGridScale'        adaptive support multiplier >=1 (default 1.1)
+%   'xMaxBound'         bound used to pre-build fixed y-grid (default 5)
 %   'saMaxIter'         SA iterations per start (default 10000)
 %   'saNStarts'         number of SA restarts (default 8)
 %   'saUseParallel'     enable parallel restarts (default false)
@@ -37,10 +41,18 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
 %                       [] means one sample per temperature block (default [])
 %
 % The canonical configuration exposes two side-effect-free evaluators:
-%   cfg.AMI_Evaluator  - fast objective used inside SA. Commit I.3 defaults
-%                        to uniform quadrature in t=ln(h), dt=0.01,
-%                        t in mu_t +/- 8 sigma_t. GH remains selectable.
+%   cfg.AMI_Evaluator  - fast objective used inside SA.
 %   cfg.AMI_Validator  - independent validation evaluator used after SA.
+%
+% Commit I.6 y-grid semantics:
+%   fixed-bound         : build y-grid once from cfg.xMaxBound and reuse it.
+%   candidate-adaptive  : for each candidate x, rebuild y-grid from
+%                         cfg.yGridScale*max(abs(x)). This changes only the
+%                         numerical integration support, never the feasible
+%                         constellation set and never introduces clipping.
+%
+% candidate-adaptive is currently supported only with the production log-h
+% fading evaluator. GH remains fixed-bound to preserve Commit-G/I.4 meaning.
 %
 % To reproduce the pre-I.3 fast objective explicitly use:
 %       'FastFadingMethod','gh','ghN_h',<order>
@@ -63,6 +75,8 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     addParameter(p, 'loghDt', 0.01, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
     addParameter(p, 'loghSpanSigma', 8, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
     addParameter(p, 'loghYBlockSize', 512, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 1 && mod(v,1)==0);
+    addParameter(p, 'YGridMode', 'fixed-bound', @(v) ischar(v) || (isstring(v) && isscalar(v)));
+    addParameter(p, 'YGridScale', 1.1, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v >= 1);
     addParameter(p, 'xMaxBound', 5, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v > 0);
 
     addParameter(p, 'saMaxIter', 10000, @(v) isnumeric(v) && isscalar(v) && isfinite(v) && v >= 1 && mod(v,1)==0);
@@ -81,6 +95,17 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     if ~ismember(fastMethod, ["logh","gh"])
         error('build_fso_config:BadFastFadingMethod', ...
             'FastFadingMethod must be ''logh'' or ''gh'', got ''%s''.', fastMethod);
+    end
+
+    yGridMode = lower(string(o.YGridMode));
+    if ~ismember(yGridMode, ["fixed-bound","candidate-adaptive"])
+        error('build_fso_config:BadYGridMode', ...
+            'YGridMode must be ''fixed-bound'' or ''candidate-adaptive'', got ''%s''.', yGridMode);
+    end
+    if fastMethod == "gh" && yGridMode == "candidate-adaptive"
+        error('build_fso_config:AdaptiveYGridRequiresLogh', ...
+            ['candidate-adaptive y-grid is intentionally enabled only for the log-h ' ...
+             'fast evaluator. Use YGridMode=''fixed-bound'' with GH.']);
     end
 
     cfg = struct();
@@ -112,8 +137,14 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
     cfg.loghDt           = double(o.loghDt);
     cfg.loghSpanSigma    = double(o.loghSpanSigma);
     cfg.loghYBlockSize   = double(o.loghYBlockSize);
+    cfg.yGridMode        = char(yGridMode);
+    cfg.yGridScale       = double(o.YGridScale);
     cfg.xMaxBound        = double(o.xMaxBound);
-    cfg.y_grid           = AMI_functions.build_noCSI_y_grid(cfg, cfg.xMaxBound);
+
+    % Always retain the historical fixed-bound grid in cfg for diagnostics,
+    % reproducibility, and config snapshots. In candidate-adaptive mode the
+    % AMI evaluator does not use this grid; it rebuilds support from x.
+    cfg.y_grid = AMI_functions.build_noCSI_y_grid(cfg, cfg.xMaxBound);
 
     % ---------------------------------------------------------------------
     % Simulated Annealing settings
@@ -188,9 +219,19 @@ function cfg = build_fso_config(M, P_avg, SNR_dB, sigma_X_sq, varargin)
             dt_local = cfg.loghDt;
             span_local = cfg.loghSpanSigma;
             block_local = cfg.loghYBlockSize;
-            cfg.AMI_Evaluator = @(x_in) AMI_noCSI_fast_logh_grid( ...
-                x_in, params.px, params, dt_local, span_local, ...
-                y_grid_local, block_local);
+
+            switch yGridMode
+                case "fixed-bound"
+                    cfg.AMI_Evaluator = @(x_in) AMI_noCSI_fast_logh_grid( ...
+                        x_in, params.px, params, dt_local, span_local, ...
+                        y_grid_local, block_local);
+
+                case "candidate-adaptive"
+                    scale_local = cfg.yGridScale;
+                    cfg.AMI_Evaluator = @(x_in) AMI_noCSI_fast_logh_adaptive_grid( ...
+                        x_in, params.px, params, dt_local, span_local, ...
+                        scale_local, block_local);
+            end
     end
 
     cfg.AMI_Validator = @(x_in) AMI_functions.AMI_noCSI_validate( ...
