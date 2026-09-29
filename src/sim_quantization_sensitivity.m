@@ -265,7 +265,7 @@ function [c,path] = run_quant_case(iM,iG,iR,MVec,gapVec,repVec,idxM,idxGap,idxRe
     sourceAMI = cfg.AMI_Validator(x);
 
     nB = numel(bitsVec);
-    q = repmat(struct(),nB,1);
+    q = struct([]);
     for iB = 1:nB
         B = bitsVec(iB);
         [xq,qi] = quantize_dac(x,B,P_avg,o.FullScaleMargin,o.PowerCalibrate);
@@ -279,7 +279,11 @@ function [c,path] = run_quant_case(iM,iG,iR,MVec,gapVec,repVec,idxM,idxGap,idxRe
         qi.absAMIChange = abs(amiQ-sourceAMI);
         qi.quantizedPAMAMI = baseline.amiQuantized(iM,iB);
         qi.quantizedShapingGain = amiQ - baseline.amiQuantized(iM,iB);
-        q(iB) = qi;
+        if iB == 1
+            q = repmat(qi,nB,1);
+        else
+            q(iB) = qi;
+        end
     end
 
     c = struct();
