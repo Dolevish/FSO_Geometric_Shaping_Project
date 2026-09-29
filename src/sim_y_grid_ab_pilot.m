@@ -235,7 +235,12 @@ function S=build_summary(cases,methods,MVec,sigVec,snrVec,nRep)
         'XMax','XMaxToBoundRatio'});
     T.Method=string(T.Method);
     numericNames=setdiff(T.Properties.VariableNames,{'Method'});
-    for j=1:numel(numericNames), T.(numericNames{j})=cell2mat(T.(numericNames{j})); end
+    for j=1:numel(numericNames)
+        name=numericNames{j};
+        if iscell(T.(name))
+            T.(name)=cell2mat(T.(name));
+        end
+    end
 
     pairRows={}; q=0;
     for iM=1:numel(MVec)
@@ -261,7 +266,10 @@ function S=build_summary(cases,methods,MVec,sigVec,snrVec,nRep)
         'AdaptiveWallSeconds','WallSpeedupFixedOverAdaptive','FixedK99','AdaptiveK99', ...
         'FixedRestartStd','AdaptiveRestartStd','FixedMaxFVGap','AdaptiveMaxFVGap'});
     for j=1:numel(P.Properties.VariableNames)
-        P.(P.Properties.VariableNames{j})=cell2mat(P.(P.Properties.VariableNames{j}));
+        name=P.Properties.VariableNames{j};
+        if iscell(P.(name))
+            P.(name)=cell2mat(P.(name));
+        end
     end
 
     S=struct(); S.raw=T; S.paired=P;
@@ -298,7 +306,10 @@ function S=build_summary(cases,methods,MVec,sigVec,snrVec,nRep)
         'MeanWallSeconds','MeanFastEvalPerSecond'});
     A.Method=string(A.Method);
     for j=2:numel(A.Properties.VariableNames)
-        A.(A.Properties.VariableNames{j})=cell2mat(A.(A.Properties.VariableNames{j}));
+        name=A.Properties.VariableNames{j};
+        if iscell(A.(name))
+            A.(name)=cell2mat(A.(name));
+        end
     end
     S.aggregate=A;
 end
