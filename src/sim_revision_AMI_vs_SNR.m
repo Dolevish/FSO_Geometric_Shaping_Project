@@ -1,8 +1,8 @@
 function bundle = sim_revision_AMI_vs_SNR(varargin)
 %SIM_REVISION_AMI_VS_SNR  Production AMI-vs-SNR pipeline for IEEE revision.
 %
-% Commit I: regenerate the manuscript's central AMI-vs-SNR results using the
-% hardened revision pipeline established in Commits A-H.
+% Commit I/I.3: regenerate the manuscript's central AMI-vs-SNR results using
+% the hardened revision pipeline established in Commits A-I.2.
 %
 % Scientific defaults:
 %   M                  = [4 8 16 32]
@@ -10,7 +10,14 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
 %   SNR                 = 5:5:30 dB
 %   sigma_X^2           = [0 0.1 0.2 0.3]
 %   d_min               = 0.01   (Commit-F/H revised nominal spacing)
-%   Gauss-Hermite order = 400    (validated fast-objective setting)
+%   fast fading method  = uniform log-h quadrature
+%   log-h spacing       = 0.01
+%   log-h span          = mu_t +/- 8 sigma_t
+%
+% Commit I.1-I.2 showed that fixed-order GH can become inaccurate at high
+% SNR because p(y|x,t) becomes sharply localized in t=ln(h).  The revised
+% production default therefore uses a uniform log-h quadrature.  GH remains
+% available explicitly for backward-compatible diagnostics.
 %
 % Optimization defaults are deliberately exposed as name-value parameters.
 % Their current values are the established baseline; after Commit-G SA
@@ -19,7 +26,7 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
 %
 % Every physical channel point (M,SNR,sigma_X^2) is evaluated using multiple
 % independent multistart replicates.  Inside every replicate:
-%   1) SA uses the fast GH+y-grid AMI objective;
+%   1) SA uses the configured fast AMI objective;
 %   2) every restart winner is independently validated by sa_multistart();
 %   3) the replicate winner is selected by validated AMI, not fast AMI.
 %
@@ -38,7 +45,11 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
 %   'TurbulenceVec'     normalized intensity variance (default [0 .1 .2 .3])
 %   'minGap'            adjacent minimum spacing (default 0.01)
 %   'pinZero'           force x_1=0 (default true)
-%   'ghN_h'             GH order for fast objective (default 400)
+%   'FastFadingMethod'  'logh' (default) or legacy 'gh'
+%   'ghN_h'             GH order when FastFadingMethod='gh' (default 400)
+%   'loghDt'            uniform t=ln(h) spacing (default 0.01)
+%   'loghSpanSigma'     half-span in sigma_t (default 8)
+%   'loghYBlockSize'    y block size for memory control (default 512)
 %   'saMaxIter'         SA iterations per restart (default 8000)
 %   'saNStarts'         restarts per independent replicate (default 6)
 %   'nReplicates'       independent multistart replicates (default 3)
@@ -54,11 +65,11 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
 %   'RunLabel'          optional human-readable run label (default '')
 %   'ResultsRoot'       output root (default repository/results/ieee_revision)
 %
-% Typical pilot after Commit-G profile selection:
+% Typical pilot:
 %   b = sim_revision_AMI_vs_SNR( ...
 %       'MVec',[8 32], 'SNRVec',[5 20 30], 'TurbulenceVec',0.1, ...
-%       'saMaxIter',2000, 'saNStarts',4, 'nReplicates',2, ...
-%       'UseParallelCases',true, 'RunLabel','pilot');
+%       'saMaxIter',3000, 'saNStarts',4, 'nReplicates',2, ...
+%       'UseParallelCases',true, 'RunLabel','pilot_logh');
 %
 % This driver intentionally does NOT compute BER.  The legacy BER routine is
 % an auxiliary approximation and is outside the scope of the revised AMI
@@ -73,7 +84,11 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
     addParameter(p,'TurbulenceVec',[0 0.1 0.2 0.3],@(v) isnumeric(v) && isvector(v) && ~isempty(v) && all(isfinite(v)) && all(v>=0));
     addParameter(p,'minGap',0.01,@(v) isnumeric(v) && isscalar(v) && isfinite(v) && isreal(v) && v>=0);
     addParameter(p,'pinZero',true,@(v) islogical(v) && isscalar(v));
+    addParameter(p,'FastFadingMethod','logh',@(v) ischar(v) || (isstring(v) && isscalar(v)));
     addParameter(p,'ghN_h',400,@positive_integer);
+    addParameter(p,'loghDt',0.01,@positive_scalar);
+    addParameter(p,'loghSpanSigma',8,@positive_scalar);
+    addParameter(p,'loghYBlockSize',512,@positive_integer);
 
     addParameter(p,'saMaxIter',8000,@positive_integer);
     addParameter(p,'saNStarts',6,@positive_integer);
@@ -92,6 +107,13 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
     addParameter(p,'ResultsRoot',fso_result_utils.default_results_root(),@(v) ischar(v) || isstring(v));
     parse(p,varargin{:});
     o = p.Results;
+
+    fastMethod = lower(string(o.FastFadingMethod));
+    if ~ismember(fastMethod,["logh","gh"])
+        error('sim_revision_AMI_vs_SNR:BadFastFadingMethod', ...
+            'FastFadingMethod must be ''logh'' or ''gh'', got ''%s''.',fastMethod);
+    end
+    o.FastFadingMethod = char(fastMethod);
 
     if ~(double(o.T0) > double(o.Tf))
         error('sim_revision_AMI_vs_SNR:TemperatureOrder','T0 must be greater than Tf.');
@@ -121,7 +143,12 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
     % Immutable run identity / no-overwrite directory.
     % ------------------------------------------------------------------
     resultsRoot = char(o.ResultsRoot);
-    methodTag = sprintf('gap%s_GH%d',num_token(o.minGap,4),o.ghN_h);
+    if fastMethod == "logh"
+        methodTag = sprintf('gap%s_LOGHdt%s_T%s', ...
+            num_token(o.minGap,4),num_token(o.loghDt,4),num_token(o.loghSpanSigma,2));
+    else
+        methodTag = sprintf('gap%s_GH%d',num_token(o.minGap,4),o.ghN_h);
+    end
     parentDir = fullfile(resultsRoot,'revised_ami_vs_snr',methodTag);
 
     runMeta = fso_result_utils.run_metadata(mfilename);
@@ -144,15 +171,20 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
         'baseStd0',double(o.BaseStd0),'itersPerTemp',double(o.ItersPerTemp));
 
     fprintf('\n============================================================\n');
-    fprintf('IEEE revision production AMI-vs-SNR pipeline (Commit I)\n');
+    fprintf('IEEE revision production AMI-vs-SNR pipeline (Commit I.3)\n');
     fprintf('Run ID: %s\n',runId);
     if strlength(string(o.RunLabel)) > 0
         fprintf('Run label: %s\n',char(string(o.RunLabel)));
     end
     fprintf('M=%s | SNR[dB]=%s | sigma_X^2=%s | Pavg=%.4g\n', ...
         mat2str(MVec),mat2str(snrVec),mat2str(sigVec),P_avg);
-    fprintf('Revised geometry: d_min=%.6g | pinZero=%d | GH=%d\n', ...
-        o.minGap,o.pinZero,o.ghN_h);
+    fprintf('Revised geometry: d_min=%.6g | pinZero=%d\n',o.minGap,o.pinZero);
+    if fastMethod == "logh"
+        fprintf('Fast fading integration: uniform log-h | dt=%.6g | span=+/-%.3g sigma_t | yBlock=%d\n', ...
+            o.loghDt,o.loghSpanSigma,o.loghYBlockSize);
+    else
+        fprintf('Fast fading integration: Gauss-Hermite | order=%d\n',o.ghN_h);
+    end
     fprintf('SA=%d restarts x %d iterations | independent replicates=%d\n', ...
         o.saNStarts,o.saMaxIter,nRep);
     fprintf('SA profile: T0=%.5g | Tf=%.5g | step0=%.5g | block=%d\n', ...
@@ -229,8 +261,11 @@ function bundle = sim_revision_AMI_vs_SNR(varargin)
     bundle.axes = struct('M',MVec,'P_avg',P_avg,'SNR_dB',snrVec, ...
         'sigma_X_sq',sigVec,'replicate',1:nRep);
     bundle.method = struct('minGap',double(o.minGap),'pinZero',logical(o.pinZero), ...
-        'ghN_h',double(o.ghN_h),'validatedRestartSelection',true, ...
-        'independentReplicates',true,'outerParallelism',doPar);
+        'fastFadingMethod',char(fastMethod),'ghN_h',double(o.ghN_h), ...
+        'loghDt',double(o.loghDt),'loghSpanSigma',double(o.loghSpanSigma), ...
+        'loghYBlockSize',double(o.loghYBlockSize), ...
+        'validatedRestartSelection',true,'independentReplicates',true, ...
+        'outerParallelism',doPar);
     bundle.sa = struct('maxIter',double(o.saMaxIter), ...
         'nStarts',double(o.saNStarts),'nReplicates',nRep, ...
         'T0',saProfile.T0,'Tf',saProfile.Tf,'baseStd0',saProfile.baseStd0, ...
@@ -271,7 +306,10 @@ function baseline = build_baseline_grid(MVec,sigVec,snrVec,P_avg,o,xMaxBounds)
         for iSig = 1:nSig
             for iSNR = 1:nSNR
                 cfg = build_fso_config(M,P_avg,snrVec(iSNR),sigVec(iSig), ...
-                    'ghN_h',o.ghN_h,'xMaxBound',xMaxBounds(iM), ...
+                    'FastFadingMethod',o.FastFadingMethod, ...
+                    'ghN_h',o.ghN_h,'loghDt',o.loghDt, ...
+                    'loghSpanSigma',o.loghSpanSigma,'loghYBlockSize',o.loghYBlockSize, ...
+                    'xMaxBound',xMaxBounds(iM), ...
                     'saMaxIter',1,'saNStarts',1,'saUseParallel',false, ...
                     'minGap',o.minGap,'pinZero',o.pinZero, ...
                     'seedInit',1,'logEvery',0,'historyEvery',1);
@@ -303,7 +341,10 @@ function [c,path] = run_revision_case(iM,iSig,iSNR,iR,MVec,sigVec,snrVec, ...
     seed = fso_result_utils.case_seed(replicateBaseSeed,M,SNR_dB,sigma_X_sq);
 
     cfg = build_fso_config(M,P_avg,SNR_dB,sigma_X_sq, ...
-        'ghN_h',o.ghN_h,'xMaxBound',xMaxBounds(iM), ...
+        'FastFadingMethod',o.FastFadingMethod, ...
+        'ghN_h',o.ghN_h,'loghDt',o.loghDt, ...
+        'loghSpanSigma',o.loghSpanSigma,'loghYBlockSize',o.loghYBlockSize, ...
+        'xMaxBound',xMaxBounds(iM), ...
         'saMaxIter',o.saMaxIter,'saNStarts',o.saNStarts, ...
         'saUseParallel',false,'minGap',o.minGap,'pinZero',o.pinZero, ...
         'seedInit',seed,'logEvery',0,'historyEvery',o.historyEvery);
@@ -567,9 +608,15 @@ end
 function print_summary(bundle)
     S = bundle.summary;
     fprintf('\nREVISED AMI-vs-SNR SUMMARY\n');
-    fprintf('d_min=%.5g | GH=%d | SA=%d x %d | replicates=%d\n', ...
-        bundle.method.minGap,bundle.method.ghN_h, ...
-        bundle.sa.nStarts,bundle.sa.maxIter,bundle.sa.nReplicates);
+    if strcmp(bundle.method.fastFadingMethod,'logh')
+        fprintf('d_min=%.5g | fast=log-h(dt=%.5g, span=+/-%.3g sigma_t) | SA=%d x %d | replicates=%d\n', ...
+            bundle.method.minGap,bundle.method.loghDt,bundle.method.loghSpanSigma, ...
+            bundle.sa.nStarts,bundle.sa.maxIter,bundle.sa.nReplicates);
+    else
+        fprintf('d_min=%.5g | fast=GH%d | SA=%d x %d | replicates=%d\n', ...
+            bundle.method.minGap,bundle.method.ghN_h, ...
+            bundle.sa.nStarts,bundle.sa.maxIter,bundle.sa.nReplicates);
+    end
     fprintf('SA profile: T0=%.5g Tf=%.5g step0=%.5g block=%d\n', ...
         bundle.sa.T0,bundle.sa.Tf,bundle.sa.baseStd0,bundle.sa.itersPerTemp);
 
