@@ -56,7 +56,7 @@ function d = diagnose_i10p2p1_runtime_tuning_sweep(varargin)
     fprintf('Results: %s\n',outDir);
     fprintf('============================================================\n\n');
 
-    rows=struct([]); q=0; scenario=0;
+    rows={}; q=0; scenario=0;
     for k=1:size(C,1)
         M=C(k,1); snr=C(k,2); sig=C(k,3);
         if size(C,2)==4
@@ -86,7 +86,7 @@ function d = diagnose_i10p2p1_runtime_tuning_sweep(varargin)
             warm_eval(x,auto,dt,o.AdaptiveScale,512,o.nWarmup);
             [v,tmed,tmean,tmin]=timed_eval(x,auto,dt,o.AdaptiveScale,512,o.nRepeats);
             assert_agreement(v,refAMI,o.AbsAgreementTolerance,M,snr,sig,geometry,'auto');
-            q=q+1; rows(q)=make_row("auto",scenario,k,geometry,M,sig,snr,dt,dtSource,max(x), ...
+            q=q+1; rows{q,1}=make_row("auto",scenario,k,geometry,M,sig,snr,dt,dtSource,max(x), ...
                 512,dAuto.yBlockSizeEffective,dAuto.symbolBatchSize,refAMI,refMed,refMean,refMin, ...
                 v,tmed,tmean,tmin,abs(v-refAMI)); %#ok<AGROW>
 
@@ -101,7 +101,7 @@ function d = diagnose_i10p2p1_runtime_tuning_sweep(varargin)
                     [v,tmed,tmean,tmin]=timed_eval(x,tuned,dt,o.AdaptiveScale,b,o.nRepeats);
                     labelTune=sprintf('b%d-s%d',b,sb);
                     assert_agreement(v,refAMI,o.AbsAgreementTolerance,M,snr,sig,geometry,labelTune);
-                    q=q+1; rows(q)=make_row("tuned",scenario,k,geometry,M,sig,snr,dt,dtSource,max(x), ...
+                    q=q+1; rows{q,1}=make_row("tuned",scenario,k,geometry,M,sig,snr,dt,dtSource,max(x), ...
                         b,dTune.yBlockSizeEffective,dTune.symbolBatchSize,refAMI,refMed,refMean,refMin, ...
                         v,tmed,tmean,tmin,abs(v-refAMI)); %#ok<AGROW>
                 end
@@ -110,7 +110,7 @@ function d = diagnose_i10p2p1_runtime_tuning_sweep(varargin)
         fprintf('  completed %d/%d physical cases\n',k,size(C,1));
     end
 
-    T=struct2table(rows);
+    T=struct2table(vertcat(rows{:}));
     tuned=T(T.Mode=="tuned",:);
     auto=T(T.Mode=="auto",:);
 
@@ -198,7 +198,7 @@ end
 
 
 function A=aggregate_tuned_by_M(T)
-    Ms=unique(T.M(:).'); rows=struct([]); q=0;
+    Ms=unique(T.M(:).'); rows={}; q=0;
     for M=Ms
         TM=T(T.M==M,:);
         blocks=unique(TM.BlockEffective(:).'); batches=unique(TM.BatchSize(:).');
@@ -207,7 +207,7 @@ function A=aggregate_tuned_by_M(T)
                 R=TM(TM.BlockEffective==b & TM.BatchSize==sb,:);
                 if isempty(R), continue; end
                 s=R.ReferenceOverOptimizedSpeedup;
-                q=q+1; rows(q)=struct( ...
+                q=q+1; rows{q,1}=struct( ...
                     'M',M,'BlockSize',b,'BatchSize',sb,'NScenarios',height(R), ...
                     'MedianSpeedup',median(s,'omitnan'),'MeanSpeedup',mean(s,'omitnan'), ...
                     'MinSpeedup',min(s,[],'omitnan'),'MaxSpeedup',max(s,[],'omitnan'), ...
@@ -215,30 +215,30 @@ function A=aggregate_tuned_by_M(T)
             end
         end
     end
-    if isempty(rows), A=table(); else, A=struct2table(rows); end
+    if isempty(rows), A=table(); else, A=struct2table(vertcat(rows{:})); end
 end
 
 
 function A=aggregate_auto_by_M(T)
-    Ms=unique(T.M(:).'); rows=struct([]); q=0;
+    Ms=unique(T.M(:).'); rows={}; q=0;
     for M=Ms
         R=T(T.M==M,:); s=R.ReferenceOverOptimizedSpeedup;
-        q=q+1; rows(q)=struct('M',M,'NScenarios',height(R), ...
+        q=q+1; rows{q,1}=struct('M',M,'NScenarios',height(R), ...
             'MedianSpeedup',median(s,'omitnan'),'MeanSpeedup',mean(s,'omitnan'), ...
             'MinSpeedup',min(s,[],'omitnan'),'MaxSpeedup',max(s,[],'omitnan')); %#ok<AGROW>
     end
-    if isempty(rows), A=table(); else, A=struct2table(rows); end
+    if isempty(rows), A=table(); else, A=struct2table(vertcat(rows{:})); end
 end
 
 
 function [recommended,bestMedian]=recommend_by_M(A,threshold)
-    Ms=unique(A.M(:).'); rec=struct([]); bm=struct([]); qr=0; qb=0;
+    Ms=unique(A.M(:).'); rec={}; bm={}; qr=0; qb=0;
     for M=Ms
         R=A(A.M==M,:);
         % Highest median, irrespective of worst-case regression.
         maxMed=max(R.MedianSpeedup); cand=R(abs(R.MedianSpeedup-maxMed)<1e-12,:);
         [~,ii]=max(cand.MinSpeedup); B=cand(ii,:);
-        qb=qb+1; bm(qb)=table_row_to_struct(B,false,threshold); %#ok<AGROW>
+        qb=qb+1; bm{qb,1}=table_row_to_struct(B,false,threshold); %#ok<AGROW>
 
         eligible=R(R.MinSpeedup>=threshold,:);
         if ~isempty(eligible)
@@ -249,9 +249,9 @@ function [recommended,bestMedian]=recommend_by_M(A,threshold)
             maxMin=max(R.MinSpeedup); cand=R(abs(R.MinSpeedup-maxMin)<1e-12,:);
             [~,ii]=max(cand.MedianSpeedup); S=cand(ii,:); noRegression=false;
         end
-        qr=qr+1; rec(qr)=table_row_to_struct(S,noRegression,threshold); %#ok<AGROW>
+        qr=qr+1; rec{qr,1}=table_row_to_struct(S,noRegression,threshold); %#ok<AGROW>
     end
-    recommended=struct2table(rec); bestMedian=struct2table(bm);
+    recommended=struct2table(vertcat(rec{:})); bestMedian=struct2table(vertcat(bm{:}));
 end
 
 
