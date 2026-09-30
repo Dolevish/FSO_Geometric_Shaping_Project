@@ -1,7 +1,7 @@
 function [dt,meta] = select_logh_dt(M,SNRdB,sigmaX2,varargin)
 %SELECT_LOGH_DT  Deterministic per-channel-case log-h spacing policy.
 %
-% Commit I.9 policy derived from the I.7/I.8 numerical diagnostics.
+% Commit I.10.3 freezes the revised policy after the I.10 paired-SA pilot.
 % The selected spacing depends ONLY on the physical channel case
 % (M,SNR_dB,sigma_X^2). It never depends on the current constellation, SA
 % iteration, restart, or random seed; therefore dt is constant throughout a
@@ -14,11 +14,18 @@ function [dt,meta] = select_logh_dt(M,SNRdB,sigmaX2,varargin)
 % Refinement rule:
 %   SNR >= 30 dB AND
 %      [ (M >= 32 AND sigma_X^2 >= 0.1) OR
-%        (M >= 16 AND sigma_X^2 >= 0.3) ]
+%        (M >= 16 AND sigma_X^2 >= 0.2) ]
 %
 % On the current production grid M={4,8,16,32}, SNR<=30 dB and
-% sigma_X^2={0,0.1,0.2,0.3}, this selects exactly the four I.8 stress cases:
-%   (32,30,0.1), (32,30,0.2), (32,30,0.3), (16,30,0.3).
+% sigma_X^2={0,0.1,0.2,0.3}, this selects exactly five refined cases:
+%   (32,30,0.1), (32,30,0.2), (32,30,0.3),
+%   (16,30,0.2), (16,30,0.3).
+%
+% The additional (16,30,0.2) refinement is the conservative resolution of
+% the I.10 boundary pilot, where same-seed dt=0.01 and dt=0.005 SA runs could
+% diverge to validated optima separated by more than the 1e-3 pilot tolerance.
+% This does not imply a 1e-3 pointwise evaluator error; the policy is refined
+% to avoid objective-resolution sensitivity along the SA trajectory.
 %
 % The >= formulation is intentionally conservative for any future extension
 % beyond the current grid: conditions at least as severe are refined rather
@@ -59,7 +66,7 @@ function [dt,meta] = select_logh_dt(M,SNRdB,sigmaX2,varargin)
     tol = 1e-12;
     hardCase = double(SNRdB) >= 30-tol && ...
         ((double(M) >= 32 && double(sigmaX2) >= 0.1-tol) || ...
-         (double(M) >= 16 && double(sigmaX2) >= 0.3-tol));
+         (double(M) >= 16 && double(sigmaX2) >= 0.2-tol));
 
     if policy == "fixed"
         dt = double(o.FixedDt);
@@ -68,17 +75,17 @@ function [dt,meta] = select_logh_dt(M,SNRdB,sigmaX2,varargin)
     elseif hardCase
         dt = double(o.RefinedDt);
         isRefined = true;
-        reason = sprintf(['I9 high-SNR/high-order refinement: SNR>=30 and ' ...
-            '((M>=32,sigma>=0.1) or (M>=16,sigma>=0.3)); dt=%.6g'],dt);
+        reason = sprintf(['I10.3 high-SNR/high-order refinement: SNR>=30 and ' ...
+            '((M>=32,sigma>=0.1) or (M>=16,sigma>=0.2)); dt=%.6g'],dt);
     else
         dt = double(o.BaseDt);
         isRefined = false;
-        reason = sprintf('I9 base case: refinement rule not triggered; dt=%.6g',dt);
+        reason = sprintf('I10.3 base case: refinement rule not triggered; dt=%.6g',dt);
     end
 
     meta = struct();
     meta.policy = char(policy);
-    meta.ruleVersion = 'I9-v1';
+    meta.ruleVersion = 'I10.3-v1';
     meta.selectedDt = dt;
     meta.baseDt = double(o.BaseDt);
     meta.refinedDt = double(o.RefinedDt);
