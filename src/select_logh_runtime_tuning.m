@@ -1,39 +1,46 @@
 function [blockSize,symbolBatchSize,meta] = select_logh_runtime_tuning(M)
 %SELECT_LOGH_RUNTIME_TUNING  Deterministic implementation-only tuning.
 %
-% Commit I.10.2 uses the I.10.1 runtime benchmark to choose a conservative
-% y-block size by constellation order, plus a small symbol batch for the
-% likelihood kernel.  These values change only how the same floating-point
-% work is grouped; they do not change the y-grid, log-h quadrature, SA, or
-% feasible constellation set.
+% Commit I.10.2.2 freezes the robust runtime policy measured by the
+% I.10.2.1 production-grid tuning sweep.  The sweep covered representative
+% low/medium/high SNR and turbulence points, two geometries, and all current
+% production constellation orders M={4,8,16,32}.
 %
-% Current production orders are M={4,8,16,32}.  The block-size rule is based
-% on the measured I.10.1 best blocks for M=4,16,32; M=8 inherits the small-M
-% setting.  Symbol batching is deliberately conservative to control memory.
+% Selection rule: choose, for each M, the tested (block,batch) pair with the
+% highest median speedup among candidates whose worst measured speedup was
+% at least 0.98x versus the exact I.10.1 reference path.  This deliberately
+% prefers robust settings over the more aggressive highest-median-only
+% settings when the latter showed runtime regressions in some scenarios.
+%
+% These values affect only how identical floating-point likelihood work is
+% grouped.  They do not change the y-grid, log-h quadrature, AMI definition,
+% SA parameters, or feasible constellation set.
 
     validateattributes(M,{'numeric'},{'scalar','real','finite','integer','>=',2},mfilename,'M');
     M=double(M);
 
-    if M <= 8
-        blockSize = 1024;
-    elseif M <= 16
+    if M <= 4
         blockSize = 2048;
-    else
+        symbolBatchSize = 1;
+    elseif M <= 8
+        blockSize = 512;
+        symbolBatchSize = 4;
+    elseif M <= 16
         blockSize = 256;
+        symbolBatchSize = 4;
+    else
+        % Current production maximum is M=32.  For larger future orders use
+        % the measured M=32 robust setting conservatively until re-benchmarked.
+        blockSize = 256;
+        symbolBatchSize = 4;
     end
 
-    if M <= 8
-        symbolBatchSize = 2;
-    elseif M <= 16
-        symbolBatchSize = 1;
-    else
-        symbolBatchSize = 2;
-    end
     symbolBatchSize=min(symbolBatchSize,M);
 
     meta=struct();
-    meta.ruleVersion='I10.2-v1';
+    meta.ruleVersion='I10.2.2-v1';
     meta.blockSize=blockSize;
     meta.symbolBatchSize=symbolBatchSize;
-    meta.source='I10.1 measured block-size benchmark plus conservative memory-aware batching';
+    meta.noRegressionThreshold=0.98;
+    meta.source='I.10.2.1 measured production-grid robust tuning sweep';
 end

@@ -38,11 +38,12 @@ function test_runtime_tuning_map()
     [b8,s8]=select_logh_runtime_tuning(8);
     [b16,s16]=select_logh_runtime_tuning(16);
     [b32,s32,m32]=select_logh_runtime_tuning(32);
-    assert(b4==1024 && s4==2);
-    assert(b8==1024 && s8==2);
-    assert(b16==2048 && s16==1);
-    assert(b32==256 && s32==2);
-    assert(strcmp(m4.ruleVersion,'I10.2-v1') && strcmp(m32.ruleVersion,'I10.2-v1'));
+    assert(b4==2048 && s4==1);
+    assert(b8==512 && s8==4);
+    assert(b16==256 && s16==4);
+    assert(b32==256 && s32==4);
+    assert(strcmp(m4.ruleVersion,'I10.2.2-v1') && strcmp(m32.ruleVersion,'I10.2.2-v1'));
+    assert(abs(m4.noRegressionThreshold-0.98)<1e-12 && abs(m32.noRegressionThreshold-0.98)<1e-12);
 end
 
 
