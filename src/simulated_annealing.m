@@ -5,6 +5,12 @@ function out = simulated_annealing(cfg, x0, startIdx, taskLabel)
 % best-solution definition are unchanged.  The function now records enough
 % diagnostics to analyze convergence, repeatability and computational cost.
 %
+% Commit I.10.1 removes only redundant feasibility assertions immediately
+% after project_constellation_1D(). The projector itself already performs the
+% same assert before returning, so acceptance logic and feasible candidates
+% are unchanged while one duplicate O(M) validation pass per proposal is
+% avoided.
+%
 % Required configuration fields are stored in cfg.SA.  History is sampled
 % every cfg.SA.historyEvery iterations (default: itersPerTemp) and always at
 % iteration 0 and maxIter.
@@ -38,9 +44,9 @@ end
 T       = sa.T0;
 baseStd = sa.baseStd0;
 
-% Centralized projection: the evaluator must score exactly this x.
+% Centralized projection: project_constellation_1D validates feasibility
+% before it returns, so no duplicate assertion is needed here.
 x = AMI_functions.project_constellation_1D(x0, cfg);
-AMI_functions.assert_constellation_feasible(x, cfg, 1e-10);
 mi = cfg.AMI_Evaluator(x);
 
 bestMI = mi;
@@ -85,8 +91,8 @@ hCumAR(hCount)   = 0;
 for it = 1:maxIter
 
     x_prop = x + baseStd * randn(size(x));
+    % The centralized projector validates feasibility internally.
     x_prop = AMI_functions.project_constellation_1D(x_prop, cfg);
-    AMI_functions.assert_constellation_feasible(x_prop, cfg, 1e-10);
 
     mi_prop = cfg.AMI_Evaluator(x_prop);
     dE      = mi_prop - mi;

@@ -23,6 +23,15 @@ function [mi_bits, diagnostics] = AMI_noCSI_fast_logh_grid(x, px, params, dt, sp
 %   spanSigma  = 8
 %   yBlockSize = 512
 %
+% Commit I.10.1 performance path:
+%   The channel-dependent log-h quadrature is cached per MATLAB worker.
+%   For repeated calls with the same (mu_t,sig_t,sigma_n^2,R,dt,spanSigma)
+%   the t-grid, trapezoidal fading weights, h values and AWGN constants are
+%   reused.  Only constellation-dependent likelihood work is repeated.
+%   The numerical quadrature, support, block size and AMI expression are
+%   unchanged. Diagnostics are materialized only when a second output is
+%   requested.
+%
 % The y dimension is processed in blocks to bound temporary memory usage.
 % This function is side-effect free and scores the exact constellation x.
 
@@ -64,9 +73,57 @@ function [mi_bits, diagnostics] = AMI_noCSI_fast_logh_grid(x, px, params, dt, sp
         d2 = bsxfun(@minus,y_grid,means).^2;
         logPyx = -0.5*log(2*pi*params.sigma_n_sq) - d2/(2*params.sigma_n_sq);
         mi_bits = mi_from_log_pyx(logPyx,px,y_grid);
-        diagnostics = struct('nT',1,'capturedMass',1,'maxStep',0, ...
-            'tMin',params.mu_t,'tMax',params.mu_t,'dtRequested',double(dt), ...
-            'spanSigma',double(spanSigma),'yBlockSize',double(yBlockSize));
+        if nargout > 1
+            diagnostics = struct('nT',1,'capturedMass',1,'maxStep',0, ...
+                'tMin',params.mu_t,'tMax',params.mu_t,'dtRequested',double(dt), ...
+                'spanSigma',double(spanSigma),'yBlockSize',double(yBlockSize), ...
+                'quadratureCacheHit',false);
+        end
+        return;
+    end
+
+    [prep,cacheHit] = cached_logh_quadrature(params,dt,spanSigma);
+    logPyx = zeros(M,Ny);
+
+    % Keep the exact historical per-symbol / per-y-block likelihood order.
+    % Only channel constants that were formerly recomputed on every call are
+    % supplied by the cache.
+    for j = 1:M
+        means = prep.hScale*x(j);
+        for b0 = 1:yBlockSize:Ny
+            b1 = min(Ny,b0+yBlockSize-1);
+            yb = y_grid(b0:b1);
+            d2 = bsxfun(@minus,yb,means).^2;
+            logTerms = bsxfun(@plus,prep.logQNorm,-prep.inv2s2*d2);
+            logPyx(j,b0:b1) = local_logsumexp(logTerms,1);
+        end
+    end
+
+    mi_bits = mi_from_log_pyx(logPyx,px,y_grid);
+
+    if nargout > 1
+        diagnostics = struct('nT',prep.nT,'capturedMass',prep.capturedMass, ...
+            'maxStep',prep.maxStep,'tMin',prep.tMin,'tMax',prep.tMax, ...
+            'dtRequested',double(dt),'spanSigma',double(spanSigma), ...
+            'yBlockSize',double(yBlockSize),'quadratureCacheHit',cacheHit);
+    end
+end
+
+
+function [prep,cacheHit] = cached_logh_quadrature(params,dt,spanSigma)
+%CACHED_LOGH_QUADRATURE  One-entry per-worker cache for a physical channel case.
+% Outer production parallelism assigns whole SA cases to workers, so a
+% single-entry cache gives the hot loop O(1) reuse without global state or a
+% growing cache across a long production sweep.
+
+    persistent lastKey lastPrep
+
+    key = [double(params.mu_t),double(params.sig_t),double(params.sigma_n_sq), ...
+        double(params.R),double(dt),double(spanSigma)];
+
+    cacheHit = ~isempty(lastKey) && isequal(lastKey,key) && ~isempty(lastPrep);
+    if cacheHit
+        prep = lastPrep;
         return;
     end
 
@@ -96,32 +153,22 @@ function [mi_bits, diagnostics] = AMI_noCSI_fast_logh_grid(x, px, params, dt, sp
             'Uniform log-h quadrature produced no positive finite weights.');
     end
 
-    logQ = log(q(:));
-    hVals = exp(tGrid(:));
-
-    inv2s2 = 1/(2*params.sigma_n_sq);
     logNorm = -0.5*log(2*pi*params.sigma_n_sq);
-    logPyx = zeros(M,Ny);
-
-    for j = 1:M
-        means = params.R*hVals*x(j);
-        for b0 = 1:yBlockSize:Ny
-            b1 = min(Ny,b0+yBlockSize-1);
-            yb = y_grid(b0:b1);
-            d2 = bsxfun(@minus,yb,means).^2;
-            logTerms = bsxfun(@plus,logQ+logNorm,-inv2s2*d2);
-            logPyx(j,b0:b1) = local_logsumexp(logTerms,1);
-        end
-    end
-
-    mi_bits = mi_from_log_pyx(logPyx,px,y_grid);
-
     steps = diff(tGrid);
     if isempty(steps), maxStep = 0; else, maxStep = max(steps); end
-    diagnostics = struct('nT',numel(tGrid),'capturedMass',capturedMass, ...
-        'maxStep',maxStep,'tMin',tMin,'tMax',tMax, ...
-        'dtRequested',double(dt),'spanSigma',double(spanSigma), ...
-        'yBlockSize',double(yBlockSize));
+
+    prep = struct();
+    prep.logQNorm = log(q(:)) + logNorm;
+    prep.hScale = params.R*exp(tGrid(:));
+    prep.inv2s2 = 1/(2*params.sigma_n_sq);
+    prep.capturedMass = capturedMass;
+    prep.nT = numel(tGrid);
+    prep.maxStep = maxStep;
+    prep.tMin = tMin;
+    prep.tMax = tMax;
+
+    lastKey = key;
+    lastPrep = prep;
 end
 
 
