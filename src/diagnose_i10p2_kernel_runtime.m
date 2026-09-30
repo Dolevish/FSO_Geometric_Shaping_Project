@@ -86,7 +86,12 @@ function d = diagnose_i10p2_kernel_runtime(varargin)
     T=cell2table(rows,'VariableNames',{'Mode','M','SigmaX2','SNRdB','Dt','IsRefined','XMax', ...
         'BlockRequested','BlockEffective','BatchSize','ReferenceAMI','ReferenceSeconds','OptimizedAMI', ...
         'MedianOptimizedSeconds','MeanOptimizedSeconds','MinOptimizedSeconds','ReferenceOverOptimizedSpeedup','AbsDifference'});
-    T.Mode=string(T.Mode); T.IsRefined=logical(cell2mat(T.IsRefined));
+    T.Mode=string(T.Mode);
+    if iscell(T.IsRefined)
+        T.IsRefined=logical(cell2mat(T.IsRefined));
+    else
+        T.IsRefined=logical(T.IsRefined);
+    end
     numericNames=setdiff(T.Properties.VariableNames,{'Mode','IsRefined'});
     for j=1:numel(numericNames), if iscell(T.(numericNames{j})),T.(numericNames{j})=cell2mat(T.(numericNames{j}));end,end
 
