@@ -31,10 +31,10 @@ function analysis = analyze_i11p1_production_results(varargin)
 %   deviation retained separately. No "best replicate" aggregation is used.
 %
 % Representative constellation policy:
-%   For geometry-only inspection, the representative replicate is the one
-%   whose validated AMI is closest to the two-replicate mean; ties select
-%   the lower replicate index. This avoids cherry-picking the best replicate
-%   and is diagnostic only until the paper-presentation policy is frozen.
+%   Geometry figures use replicate 1 deterministically. Replicate 2 is an
+%   independent repeatability check; performance curves/tables still use
+%   the two-replicate validated-AMI mean. This avoids cherry-picking a
+%   geometry based on the achieved AMI.
 %
 % No global-optimum claim is implied.
 
@@ -90,14 +90,14 @@ function analysis = analyze_i11p1_production_results(varargin)
         'GSMeanValidated','GSStdAcrossReplicates','ReplicateRangeBits'});
 
     analysis=struct();
-    analysis.version='I12A-v1';
+    analysis.version='I12A-v2';
     analysis.sourceBundlePath=bundlePath;
     analysis.outputDirectory=outDir;
     analysis.productionFreeze=F;
     analysis.aggregationPolicy='mean validated AMI across replicates; sample std retained';
     analysis.representativeConstellationPolicy=[ ...
-        'replicate whose validated AMI is closest to the across-replicate mean; ' ...
-        'tie -> lower replicate index; diagnostic only'];
+        'fixed replicate 1 for geometry; replicate 2 retained only as an ' ...
+        'independent repeatability check'];
     analysis.caseTable=T;
     analysis.physicalTable=physical;
     analysis.perMTable=perM;
@@ -105,6 +105,7 @@ function analysis = analyze_i11p1_production_results(varargin)
     analysis.selectionChanges=selectionChanges;
     analysis.repeatabilitySorted=repeatabilitySorted;
     analysis.fig4_M8_SNR20=fig4Table;
+    numericalZeroTolerance=1e-10;
     analysis.metrics=struct( ...
         'nOptimizationCases',height(T), ...
         'nPhysicalPoints',height(physical), ...
@@ -116,8 +117,11 @@ function analysis = analyze_i11p1_production_results(varargin)
         'maxReplicateRangeCase',maxRepCase, ...
         'minIndividualGainBits',min(T.GainBits), ...
         'minMeanPhysicalGainBits',min(physical.GainMeanBits), ...
-        'nNegativeIndividualGains',sum(T.GainBits<0), ...
-        'nNegativeMeanPhysicalGains',sum(physical.GainMeanBits<0));
+        'numericalZeroTolerance',numericalZeroTolerance, ...
+        'nNegativeIndividualGainsRaw',sum(T.GainBits<0), ...
+        'nNegativeMeanPhysicalGainsRaw',sum(physical.GainMeanBits<0), ...
+        'nMateriallyNegativeIndividualGains',sum(T.GainBits < -numericalZeroTolerance), ...
+        'nMateriallyNegativeMeanPhysicalGains',sum(physical.GainMeanBits < -numericalZeroTolerance));
 
     save(fullfile(outDir,'i12_analysis.mat'),'analysis','-v7.3');
     if o.WriteCSV
@@ -185,8 +189,7 @@ function physical=build_physical_summary(T,F)
 
         gs=R.AMIValidated(:); gain=R.GainBits(:);
         gsMean=mean(gs);
-        dRep=abs(gs-gsMean);
-        repPos=find(dRep<=min(dRep)+1e-12,1,'first');
+        repPos=1; % fixed, transparent geometry policy; never best-replicate cherry-picking
 
         PAMValidated(k)=mean(pamByRep);
         GSRep1Validated(k)=gs(1);
@@ -397,8 +400,11 @@ function print_report(A)
     fprintf('Max replicate AMI range: %.6f bits/symbol\n',M.maxReplicateRangeBits);
     fprintf('Min individual gain: %.6f | min mean physical-point gain: %.6f bits/symbol\n', ...
         M.minIndividualGainBits,M.minMeanPhysicalGainBits);
-    fprintf('Negative gains: %d individual cases | %d mean physical points\n', ...
-        M.nNegativeIndividualGains,M.nNegativeMeanPhysicalGains);
+    fprintf('Raw negative gains: %d individual cases | %d mean physical points\n', ...
+        M.nNegativeIndividualGainsRaw,M.nNegativeMeanPhysicalGainsRaw);
+    fprintf('Material negative gains (< -%.1e): %d individual | %d mean physical points\n', ...
+        M.numericalZeroTolerance,M.nMateriallyNegativeIndividualGains, ...
+        M.nMateriallyNegativeMeanPhysicalGains);
 
     fprintf('\nPer-M summary:\n');
     disp(A.perMTable);

@@ -49,6 +49,8 @@ function test_full_synthetic_bundle()
     assert(height(A.tableI_M8_SNR20)==4);
     assert(A.metrics.nSelectionChanges==expected.nSelectionChanges);
     assert(abs(A.metrics.maxFastValidatorGap-expected.maxGap)<1e-12);
+    assert(A.metrics.nMateriallyNegativeIndividualGains==0);
+    assert(A.metrics.nMateriallyNegativeMeanPhysicalGains==0);
 
     p=A.physicalTable(A.physicalTable.M==8 & ...
         abs(A.physicalTable.SigmaX2-0.2)<1e-12 & ...
@@ -56,7 +58,7 @@ function test_full_synthetic_bundle()
     assert(height(p)==1);
     assert(abs(p.GSMeanValidated-expected.specialMean)<1e-12);
     assert(abs(p.ReplicateRangeBits-expected.specialRange)<1e-12);
-    assert(p.RepresentativeReplicate==1); % exact mean tie -> lower replicate
+    assert(p.RepresentativeReplicate==1); % fixed geometry policy
 
     assert(height(A.fig4_M8_SNR20)==4);
     assert(all(A.fig4_M8_SNR20.RepresentativeReplicate==1));
