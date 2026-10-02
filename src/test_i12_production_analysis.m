@@ -60,6 +60,20 @@ function test_full_synthetic_bundle()
 
     assert(height(A.fig4_M8_SNR20)==4);
     assert(all(A.fig4_M8_SNR20.RepresentativeReplicate==1));
+
+    % Regression for the real default-root shape:
+    % fso_result_utils.default_results_root() already ends in
+    % results/ieee_revision, so the analyzer must not append ieee_revision twice.
+    discoveryRoot=fullfile(root,'results','ieee_revision');
+    productionDir=fullfile(discoveryRoot,'i11p1_production','synthetic_run');
+    mkdir(productionDir);
+    copyfile(path,fullfile(productionDir,'i11p1ProductionBundle.mat'));
+    A2=analyze_i11p1_production_results( ...
+        'ResultsRoot',discoveryRoot, ...
+        'OutputDirectory',fullfile(root,'analysis_autodiscovery'), ...
+        'WriteCSV',false);
+    assert(strcmp(A2.sourceBundlePath,fullfile(productionDir,'i11p1ProductionBundle.mat')));
+    assert(height(A2.physicalTable)==96);
 end
 
 function [bundle,expected]=synthetic_bundle(F,root)

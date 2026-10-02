@@ -355,12 +355,29 @@ function path=resolve_bundle_path(requested,resultsRoot)
         return;
     end
 
-    root=fullfile(char(string(resultsRoot)),'ieee_revision','i11p1_production');
-    D=dir(fullfile(root,'*','i11p1ProductionBundle.mat'));
+    base=char(string(resultsRoot));
+    roots={fullfile(base,'i11p1_production'), ...
+        fullfile(base,'ieee_revision','i11p1_production')};
+    roots=unique(roots,'stable');
+
+    D=[];
+    searched=strings(0,1);
+    for i=1:numel(roots)
+        searched(end+1,1)=string(roots{i}); %#ok<AGROW>
+        Di=dir(fullfile(roots{i},'*','i11p1ProductionBundle.mat'));
+        if ~isempty(Di)
+            if isempty(D)
+                D=Di;
+            else
+                D=[D; Di]; %#ok<AGROW>
+            end
+        end
+    end
     if isempty(D)
         error('analyze_i11p1_production_results:NoProductionBundle', ...
-            ['No i11p1ProductionBundle.mat found under %s. Supply ' ...
-             '''ProductionBundlePath'' explicitly.'],root);
+            ['No i11p1ProductionBundle.mat found. Searched:\n  %s\n' ...
+             'Supply ''ProductionBundlePath'' explicitly if needed.'], ...
+             strjoin(cellstr(searched),sprintf('\n  ')));
     end
     [~,k]=max([D.datenum]); %#ok<DATNM>
     path=fullfile(D(k).folder,D(k).name);
