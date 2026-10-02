@@ -71,9 +71,6 @@ function [bundle,expected]=synthetic_bundle(F,root)
         M=F.MVec(iM);
         [nStarts,~]=i11_restart_policy(M);
         dt=0.01;
-        if (M==16 && any(abs(F.TurbulenceVec-[0.2 0.3]')<1e-12)) %#ok<NBRAK>
-            % The exact synthetic dt values are not scientifically relevant.
-        end
         for iSig=1:numel(F.TurbulenceVec)
             sig=F.TurbulenceVec(iSig);
             for iSNR=1:numel(F.SNRVec)

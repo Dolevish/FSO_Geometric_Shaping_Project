@@ -185,7 +185,8 @@ function physical=build_physical_summary(T,F)
 
         gs=R.AMIValidated(:); gain=R.GainBits(:);
         gsMean=mean(gs);
-        [~,repPos]=min(abs(gs-gsMean));
+        dRep=abs(gs-gsMean);
+        repPos=find(dRep<=min(dRep)+1e-12,1,'first');
 
         PAMValidated(k)=mean(pamByRep);
         GSRep1Validated(k)=gs(1);
