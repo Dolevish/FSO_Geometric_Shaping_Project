@@ -15,6 +15,7 @@ function result = sim_i13_optimizer_pilot(varargin)
     addParameter(p,'ResultsRoot',fso_result_utils.default_results_root(),@text_scalar);
     addParameter(p,'OutputDirectory','',@text_scalar);
     addParameter(p,'BudgetFraction',0.05,@fraction_scalar);
+    addParameter(p,'Optimizer','auto',@optimizer_name);
     addParameter(p,'Replicate',1,@(v)isnumeric(v)&&isscalar(v)&&ismember(v,[1 2]));
     addParameter(p,'Cases',[8 20 0.1;16 20 0.2;32 20 0.3;32 30 0.2],@case_matrix);
     parse(p,varargin{:}); o=p.Results;
@@ -33,6 +34,7 @@ function result = sim_i13_optimizer_pilot(varargin)
     end
     if exist(outDir,'dir')~=7,mkdir(outDir);end
 
+    optimizerUsed=resolve_optimizer(o.Optimizer);
     cases=double(o.Cases);
     n=size(cases,1);
     rows=cell(n,1);
@@ -40,7 +42,7 @@ function result = sim_i13_optimizer_pilot(varargin)
 
     fprintf('\n============================================================\n');
     fprintf('I.13C REVIEWER-2 OPTIMIZER PILOT\n');
-    fprintf('Pattern Search vs frozen SA replicate %d\n',o.Replicate);
+    fprintf('%s vs frozen SA replicate %d\n',optimizerUsed,o.Replicate);
     fprintf('BudgetFraction=%.3f (pilot only; not reviewer-final)\n',o.BudgetFraction);
     fprintf('============================================================\n');
 
@@ -74,8 +76,16 @@ function result = sim_i13_optimizer_pilot(varargin)
         fprintf('\nCase %d/%d: M=%d SNR=%.1f sigma_R^2=%.1f | starts=%d | PS eval/start=%d (full fair=%d)\n', ...
             k,n,M,snr,sig,nStarts,pilotPerStart,fullPerStart);
 
-        [psOut,psRuns]=patternsearch_multistart_validated( ...
-            cfg,xBaseline,R.Seed,nStarts,pilotPerStart);
+        switch optimizerUsed
+            case 'patternsearch'
+                [altOut,altRuns]=patternsearch_multistart_validated( ...
+                    cfg,xBaseline,R.Seed,nStarts,pilotPerStart);
+            case 'fminsearch'
+                [altOut,altRuns]=fminsearch_multistart_validated( ...
+                    cfg,xBaseline,R.Seed,nStarts,pilotPerStart);
+            otherwise
+                error('sim_i13_optimizer_pilot:OptimizerInternal','Unexpected optimizer.');
+        end
 
         row=struct();
         row.M=M; row.SNRdB=snr; row.SigmaR2=sig; row.Replicate=o.Replicate;
@@ -86,23 +96,25 @@ function result = sim_i13_optimizer_pilot(varargin)
         row.BudgetFraction=o.BudgetFraction;
         row.PAMValidated=baselineAMI;
         row.SAValidated=R.AMIValidated;
-        row.PSValidated=psOut.bestMIValidated;
-        row.SAMinusPS=R.AMIValidated-psOut.bestMIValidated;
+        row.Optimizer=string(optimizerUsed);
+        row.AltValidated=altOut.bestMIValidated;
+        row.SAMinusAlt=R.AMIValidated-altOut.bestMIValidated;
         row.SAGainOverPAM=R.AMIValidated-baselineAMI;
-        row.PSGainOverPAM=psOut.bestMIValidated-baselineAMI;
-        row.PSTotalFunctionEvaluations=psOut.totalFunctionEvaluations;
-        row.PSTotalRuntimeSeconds=psOut.totalRuntime;
-        row.PSMaxFastValidatorGap=psOut.maxAbsFastValidationGap;
+        row.AltGainOverPAM=altOut.bestMIValidated-baselineAMI;
+        row.AltTotalFunctionEvaluations=altOut.totalFunctionEvaluations;
+        row.AltTotalRuntimeSeconds=altOut.totalRuntime;
+        row.AltMaxFastValidatorGap=altOut.maxAbsFastValidationGap;
         rows{k}=row;
-        details{k}=struct('case',row,'patternsearch',psOut,'runs',psRuns);
+        details{k}=struct('case',row,'alternative',altOut,'runs',altRuns);
     end
 
     summary=struct2table(vertcat(rows{:}));
     result=struct();
-    result.version='I13C-pilot-v1';
+    result.version='I13C-pilot-v1.1';
     result.isReviewerFinal=false;
     result.reasonNotFinal='BudgetFraction is below 1 unless explicitly overridden; final case grid/tie tolerance not frozen yet.';
     result.sourceProduction=A.sourceBundlePath;
+    result.optimizer=optimizerUsed;
     result.summary=summary;
     result.details=details;
     result.outputDirectory=outDir;
@@ -111,8 +123,8 @@ function result = sim_i13_optimizer_pilot(varargin)
     writetable(summary,fullfile(outDir,'i13c_optimizer_pilot.csv'));
 
     fprintf('\nI.13C PILOT SUMMARY (not reviewer-final)\n');
-    disp(summary(:,{'M','SNRdB','SigmaR2','SAValidated','PSValidated','SAMinusPS', ...
-        'PSTotalFunctionEvaluations','PSTotalRuntimeSeconds'}));
+    disp(summary(:,{'M','SNRdB','SigmaR2','Optimizer','SAValidated','AltValidated','SAMinusAlt', ...
+        'AltTotalFunctionEvaluations','AltTotalRuntimeSeconds'}));
     fprintf('Outputs: %s\n',outDir);
 end
 
@@ -135,6 +147,27 @@ function [x,ami]=production_baseline(b,M,snr,sig)
     end
 end
 
+function name=resolve_optimizer(v)
+    name=lower(char(string(v)));
+    if strcmp(name,'auto')
+        if exist('patternsearch','file')==2
+            name='patternsearch';
+        else
+            name='fminsearch';
+        end
+    end
+    if strcmp(name,'patternsearch') && exist('patternsearch','file')~=2
+        error('sim_i13_optimizer_pilot:PatternSearchMissing', ...
+            'patternsearch was requested but is unavailable.');
+    end
+    if ~ismember(name,{'patternsearch','fminsearch'})
+        error('sim_i13_optimizer_pilot:Optimizer','Unknown optimizer: %s',name);
+    end
+end
+function tf=optimizer_name(v)
+    tf=(ischar(v)||(isstring(v)&&isscalar(v))) && ...
+        any(strcmpi(string(v),["auto","patternsearch","fminsearch"]));
+end
 function tf=text_scalar(v),tf=ischar(v)||(isstring(v)&&isscalar(v));end
 function tf=fraction_scalar(v),tf=isnumeric(v)&&isscalar(v)&&isfinite(v)&&v>0&&v<=1;end
 function tf=case_matrix(v),tf=isnumeric(v)&&ismatrix(v)&&size(v,2)==3&&all(isfinite(v(:)));end
