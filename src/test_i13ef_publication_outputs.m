@@ -75,7 +75,8 @@ function result=synthetic_result()
         SAMean,PSMean,SAStd,PSStd,DeltaRep1,DeltaRep2,SAMinusPSMean,Outcome);
 
     nc=32;
-    M=zeros(nc,1); PSRestartStd=zeros(nc,1);
+    M=zeros(nc,1); SNRdB=zeros(nc,1); SigmaR2=zeros(nc,1); Replicate=zeros(nc,1);
+    PSRestartStd=zeros(nc,1);
     PSTotalFunctionEvaluations=zeros(nc,1); PSMaxEvalOverrun=zeros(nc,1);
     q=0;
     for m=MVec
@@ -83,7 +84,7 @@ function result=synthetic_result()
             for sig=sigVec
                 for rep=1:2
                     q=q+1;
-                    M(q)=m;
+                    M(q)=m; SNRdB(q)=snr; SigmaR2(q)=sig; Replicate(q)=rep;
                     PSRestartStd(q)=0.01*log2(m);
                     PSTotalFunctionEvaluations(q)=1000;
                     PSMaxEvalOverrun(q)=0;
@@ -91,7 +92,8 @@ function result=synthetic_result()
             end
         end
     end
-    caseSummary=table(M,PSRestartStd,PSTotalFunctionEvaluations,PSMaxEvalOverrun);
+    caseSummary=table(M,SNRdB,SigmaR2,Replicate,PSRestartStd, ...
+        PSTotalFunctionEvaluations,PSMaxEvalOverrun);
 
     config=struct('tieToleranceBits',1e-3,'totalMaxFunctionEvaluations',40000);
     metrics=struct('totalPatternSearchFunctionEvaluations',sum(PSTotalFunctionEvaluations));

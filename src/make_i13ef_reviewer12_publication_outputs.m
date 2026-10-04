@@ -391,7 +391,7 @@ function fig=make_optimizer_figure(P,tol)
     xlim(ax,[lo-pad hi+pad]); ylim(ax,[lo-pad hi+pad]);
     axis(ax,'square');
     legLabels=arrayfun(@(m)sprintf('M=%d',m),MVec,'UniformOutput',false);
-    legend(ax,[hDiag;hM],['y=x',legLabels],'Location','southeast','FontSize',7);
+    legend(ax,[hDiag;hM],[{'y=x'},legLabels],'Location','southeast','FontSize',7);
     text(ax,0.03,0.97,'o: sigma_R^2=0;  s: sigma_R^2=0.3;  filled: 30 dB', ...
         'Units','normalized','VerticalAlignment','top','FontSize',6.6, ...
         'Interpreter','none');
@@ -493,7 +493,7 @@ function fig=make_four_method_figure(P)
         xlim(ax,[0.55 4.45]);
         xticks(ax,x);
         xticklabels(ax,{'20 / 0','20 / 0.3','30 / 0','30 / 0.3'});
-        xlabel(ax,'SNR [dB] / sigma_R^2');
+        xlabel(ax,'SNR [dB] / \\sigma_R^2','Interpreter','tex');
         ylabel(ax,'Validated AMI [bits/symbol]');
         title(ax,sprintf('M = %d',MVec(iM)),'FontWeight','normal');
         apply_ieee_axes(ax);
