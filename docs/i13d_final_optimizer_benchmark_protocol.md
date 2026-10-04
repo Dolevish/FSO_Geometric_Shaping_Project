@@ -39,6 +39,9 @@ For each case Pattern Search uses:
 - the same maximum objective-evaluation budget:
   - M=4,8,16: 4001 evaluations/start;
   - M=32: 8001 evaluations/start.
+- no separate pre-score of the Pattern Search initial point is performed;
+  its initial evaluation is part of MaxFunctionEvaluations, so no hidden
+  extra AMI call is added for logging.
 
 UseCompletePoll is frozen to false so Pattern Search is not intentionally forced to
 finish an entire poll after an improvement when the comparison is evaluation-budget

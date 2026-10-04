@@ -49,6 +49,7 @@ function test_frozen_config()
     assert(F.nPhysicalPoints==16);
     assert(F.nOptimizationCases==32);
     assert(F.nRestartTasks==224);
+    assert(F.totalMaxFunctionEvaluations==1152224);
     assert(abs(F.tieToleranceBits-1e-3)<eps);
     assert(strcmp(F.scheduler,'parfeval-dynamic-v1'));
     assert(~F.PatternSearch.UseParallel);

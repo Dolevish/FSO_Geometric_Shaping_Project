@@ -85,6 +85,7 @@ function result = sim_i13d_final_optimizer_benchmark(varargin)
         mat2str(F.MVec),mat2str(F.SNRVec),mat2str(F.TurbulenceVec),mat2str(F.Replicates));
     fprintf('Cases=%d | restart tasks=%d | starts=%s\n', ...
         F.nOptimizationCases,F.nRestartTasks,mat2str(F.RestartsByM));
+    fprintf('Max PS objective evaluations across benchmark: %.0f\n',F.totalMaxFunctionEvaluations);
     fprintf('PS eval/start=%s | equivalence=%.1e bit/symbol\n', ...
         mat2str(F.MaxEvalsPerStart),F.tieToleranceBits);
     fprintf('Scheduler: %s | workers=%d | nested parallelism=OFF\n', ...
@@ -212,12 +213,6 @@ function result = sim_i13d_final_optimizer_benchmark(varargin)
 
     print_summary(result);
 
-    if o.DeletePoolOnFinish
-        pp=gcp('nocreate');
-        if ~isempty(pp)
-            delete(pp);
-        end
-    end
 end
 
 
@@ -360,6 +355,7 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
         error('sim_i13d_final_optimizer_benchmark:PoolSize', ...
             'Requested %d workers, got %d.',o.ParallelWorkers,pp.NumWorkers);
     end
+    poolCleanup=onCleanup(@() cleanup_pool(pp,o.DeletePoolOnFinish)); %#ok<NASGU>
 
     nWorkers=pp.NumWorkers;
     nPending=numel(pending);
@@ -734,6 +730,15 @@ end
 function cleanup_tmp(path)
     if exist(path,'file')==2
         try,delete(path);catch,end
+    end
+end
+
+function cleanup_pool(pp,doDelete)
+    if doDelete && ~isempty(pp)
+        try
+            if isvalid(pp),delete(pp);end
+        catch
+        end
     end
 end
 

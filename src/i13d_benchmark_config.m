@@ -59,9 +59,12 @@ function F = i13d_benchmark_config()
     F.nPhysicalPoints=numel(F.MVec)*numel(F.SNRVec)*numel(F.TurbulenceVec);
     F.nOptimizationCases=F.nPhysicalPoints*numel(F.Replicates);
     F.nRestartTasks=0;
+    F.totalMaxFunctionEvaluations=0;
     for k=1:numel(F.MVec)
-        F.nRestartTasks=F.nRestartTasks + ...
-            numel(F.SNRVec)*numel(F.TurbulenceVec)*numel(F.Replicates)*F.RestartsByM(k);
+        nCasesThisM=numel(F.SNRVec)*numel(F.TurbulenceVec)*numel(F.Replicates);
+        F.nRestartTasks=F.nRestartTasks + nCasesThisM*F.RestartsByM(k);
+        F.totalMaxFunctionEvaluations=F.totalMaxFunctionEvaluations + ...
+            nCasesThisM*F.RestartsByM(k)*F.MaxEvalsPerStart(k);
     end
 
     % Pattern Search options. UseCompletePoll=false is deliberate: the

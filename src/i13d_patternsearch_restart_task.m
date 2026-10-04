@@ -21,7 +21,12 @@ function result = i13d_patternsearch_restart_task(cfg,xBaseline,masterSeed,resta
         xRaw=Xraw(:,restartIndex);
         x0=AMI_functions.project_constellation_1D(xRaw,cfg);
         AMI_functions.assert_constellation_feasible(x0,cfg,1e-10);
-        initialFast=cfg.AMI_Evaluator(x0);
+
+        % Do NOT score x0 separately here. Pattern Search evaluates its
+        % initial point inside MaxFunctionEvaluations. An extra logging
+        % evaluation would give PS one more AMI call than the matched SA
+        % budget. InitialFastAMI is therefore intentionally left NaN.
+        initialFast=NaN;
 
         [A,b,Aeq,beq,lb,ub]=linear_constraints(cfg);
 
@@ -35,8 +40,8 @@ function result = i13d_patternsearch_restart_task(cfg,xBaseline,masterSeed,resta
             'StepTolerance',double(psPolicy.StepTolerance), ...
             'FunctionTolerance',double(psPolicy.FunctionTolerance));
 
-        fprintf('[I13D|%s] START | initMI=%.6f | maxEvals=%d\n', ...
-            char(identity.IdentityKey),initialFast,maxEvals);
+        fprintf('[I13D|%s] START | maxEvals=%d\n', ...
+            char(identity.IdentityKey),maxEvals);
 
         optTimer=tic;
         [x,fval,exitflag,psOut]=patternsearch( ...

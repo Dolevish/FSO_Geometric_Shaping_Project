@@ -109,7 +109,7 @@ function fig=make_primary(P,tol)
 
     patch(ax,[0.5 n+0.5 n+0.5 0.5],[-tol -tol tol tol], ...
         [0.85 0.85 0.85],'FaceAlpha',0.35,'EdgeColor','none', ...
-        'DisplayName',sprintf('|\\Delta I| \\le %.0e',tol));
+        'DisplayName',sprintf('|\Delta I| \le %.0e',tol));
     yline(ax,0,'k-','LineWidth',1,'HandleVisibility','off');
     yline(ax,tol,'k:','LineWidth',0.8,'HandleVisibility','off');
     yline(ax,-tol,'k:','LineWidth',0.8,'HandleVisibility','off');
@@ -128,7 +128,7 @@ function fig=make_primary(P,tol)
     xlim(ax,[0.5 n+0.5]); ylim(ax,[-yl yl]);
     xticks(ax,x); xticklabels(ax,labels); xtickangle(ax,55);
     ylabel(ax,'I_{SA}-I_{PS} [bits/symbol]');
-    xlabel(ax,'M | SNR [dB] | \\sigma_R^2');
+    xlabel(ax,'M | SNR [dB] | \sigma_R^2');
     title(ax,'(b) Difference with equivalence band');
     legend(ax,'Location','best','FontSize',8);
     set(ax,'FontSize',8.5,'LineWidth',0.8);
@@ -161,7 +161,7 @@ function fig=make_four_method(P)
             labels{k}=sprintf('%d/%.1f',R.SNRdB(k),R.SigmaR2(k));
         end
         xticks(ax,x); xticklabels(ax,labels);
-        xlabel(ax,'SNR / \\sigma_R^2');
+        xlabel(ax,'SNR / \sigma_R^2');
         ylabel(ax,'Validated AMI [bits/symbol]');
         title(ax,sprintf('M = %d',M),'FontWeight','normal');
         if iM==1,legend(ax,'Location','best','FontSize',7);end
@@ -198,7 +198,7 @@ function fig=make_restart_variability(R,C)
         end
         xticks(ax,1:height(cases)); xticklabels(ax,labels); xtickangle(ax,55);
         ylabel(ax,'Validated AMI [bits/symbol]');
-        xlabel(ax,'SNR / \\sigma_R^2 / replicate');
+        xlabel(ax,'SNR / \sigma_R^2 / replicate');
         title(ax,sprintf('M = %d: PS restarts (dots), SA winner (x)',M), ...
             'FontWeight','normal');
         set(ax,'FontSize',8,'LineWidth',0.8);
