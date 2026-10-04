@@ -30,7 +30,7 @@ f4=fig4(A.fig4_M8_SNR20);
 f5=fig5(P,o.ShowReplicateErrorBars);
 
 out=struct();
-out.version='I12B-v1';
+out.version='I12B-v1.1';
 out.outputDirectory=outDir;
 out.fig3=saveall(f3,outDir,'Fig3_M8_AMI_vs_SNR');
 out.fig4=saveall(f4,outDir,'Fig4_M8_SNR20_constellations');
@@ -54,15 +54,15 @@ ax=axes(f); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 for i=1:numel(sig)
     R=sortrows(P(P.M==M & abs(P.SigmaX2-sig(i))<1e-12,:),'SNRdB');
     plot(ax,R.SNRdB,R.PAMValidated,'--','Color',C(i,:),'LineWidth',1.2, ...
-        'DisplayName',sprintf('PAM, \\sigma_X^2=%.1f',sig(i)));
+        'DisplayName',sprintf('PAM, \\sigma_R^2=%.1f',sig(i)));
     if showErr
         errorbar(ax,R.SNRdB,R.GSMeanValidated,R.GSStdAcrossReplicates,'-o', ...
             'Color',C(i,:),'LineWidth',1.6,'MarkerSize',4,'CapSize',3, ...
-            'DisplayName',sprintf('GS, \\sigma_X^2=%.1f',sig(i)));
+            'DisplayName',sprintf('GS, \\sigma_R^2=%.1f',sig(i)));
     else
         plot(ax,R.SNRdB,R.GSMeanValidated,'-o','Color',C(i,:), ...
             'LineWidth',1.6,'MarkerSize',4, ...
-            'DisplayName',sprintf('GS, \\sigma_X^2=%.1f',sig(i)));
+            'DisplayName',sprintf('GS, \\sigma_R^2=%.1f',sig(i)));
     end
 end
 yline(ax,log2(M),':','HandleVisibility','off');
@@ -85,7 +85,7 @@ for i=1:height(T)
     end
     plot(ax,k,pam,'--o','LineWidth',1.2,'MarkerSize',4,'DisplayName','Uniform PAM');
     plot(ax,k,gs,'-s','LineWidth',1.6,'MarkerSize',4,'DisplayName','GS (rep. 1)');
-    title(ax,sprintf('\\sigma_X^2 = %.1f',T.SigmaX2(i)),'FontWeight','normal');
+    title(ax,sprintf('\\sigma_R^2 = %.1f',T.SigmaX2(i)),'FontWeight','normal');
     xlabel(ax,'Symbol index'); ylabel(ax,'Intensity level'); xlim(ax,[1 M]); xticks(ax,1:M);
     if i==1,legend(ax,'Location','best','FontSize',8);end
     set(ax,'FontSize',9);
@@ -102,15 +102,15 @@ for im=1:numel(Mvec)
         R=sortrows(P(P.M==M & abs(P.SigmaX2-sig(i))<1e-12,:),'SNRdB');
         hv=onoff(im==1);
         plot(ax,R.SNRdB,R.PAMValidated,'--','Color',C(i,:),'LineWidth',1, ...
-            'HandleVisibility',hv,'DisplayName',sprintf('PAM, \\sigma_X^2=%.1f',sig(i)));
+            'HandleVisibility',hv,'DisplayName',sprintf('PAM, \\sigma_R^2=%.1f',sig(i)));
         if showErr
             errorbar(ax,R.SNRdB,R.GSMeanValidated,R.GSStdAcrossReplicates,'-o', ...
                 'Color',C(i,:),'LineWidth',1.3,'MarkerSize',3,'CapSize',2, ...
-                'HandleVisibility',hv,'DisplayName',sprintf('GS, \\sigma_X^2=%.1f',sig(i)));
+                'HandleVisibility',hv,'DisplayName',sprintf('GS, \\sigma_R^2=%.1f',sig(i)));
         else
             plot(ax,R.SNRdB,R.GSMeanValidated,'-o','Color',C(i,:),'LineWidth',1.3, ...
                 'MarkerSize',3,'HandleVisibility',hv, ...
-                'DisplayName',sprintf('GS, \\sigma_X^2=%.1f',sig(i)));
+                'DisplayName',sprintf('GS, \\sigma_R^2=%.1f',sig(i)));
         end
     end
     yline(ax,log2(M),':','HandleVisibility','off');
@@ -146,7 +146,7 @@ fprintf(fid,'Max fast-validator gap: %.6e bits/symbol\n',M.maxFastValidatorGap);
 fprintf(fid,'Max replicate AMI range: %.6f bits/symbol\n',M.maxReplicateRangeBits);
 fprintf(fid,'Material negative gains (< -%.1e): %d individual, %d physical means\n\n', ...
     M.numericalZeroTolerance,M.nMateriallyNegativeIndividualGains,M.nMateriallyNegativeMeanPhysicalGains);
-fprintf(fid,'M=8, SNR=20 dB: sigma_X^2, PAM, GS mean, gain, GS std\n');
+fprintf(fid,'M=8, SNR=20 dB: sigma_R^2, PAM, GS mean, gain, GS std\n');
 for i=1:height(T)
     fprintf(fid,'%.2f, %.6f, %.6f, %.6f, %.6e\n',T.SigmaX2(i),T.PAMValidated(i), ...
         T.GSMeanValidated(i),T.GainMeanBits(i),T.GSStdAcrossReplicates(i));

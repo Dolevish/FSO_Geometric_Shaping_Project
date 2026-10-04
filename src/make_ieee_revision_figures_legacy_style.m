@@ -20,10 +20,9 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
 %   - The constellation geometry uses replicate 1 consistently, as frozen
 %     in I.12A-v2. The AMI annotation beside that geometry therefore uses
 %     replicate 1, not the two-replicate mean.
-%   - The implementation parameter is sigma_X^2 (normalized intensity
-%     variance/scintillation index), not Rytov variance. By default the
-%     corrected symbol sigma_X^2 is shown. Set 'UseLegacySigmaSymbol',true
-%     only when an exact old-label rendering is desired.
+%   - The manuscript notation is sigma_R^2. Internal production-table
+%     column names such as SigmaX2 are retained only for backward-compatible
+%     data loading and do not determine the notation shown in the figures.
 %   - The legacy axis policy is retained. Where new production values exceed
 %     an old panel limit, the upper limit is expanded just enough to avoid
 %     clipping while preserving the old tick spacing.
@@ -42,7 +41,6 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
     addParameter(p,'ProductionBundlePath','',@text_scalar);
     addParameter(p,'ResultsRoot',fso_result_utils.default_results_root(),@text_scalar);
     addParameter(p,'OutputDirectory','',@text_scalar);
-    addParameter(p,'UseLegacySigmaSymbol',false,@logical_scalar);
     addParameter(p,'CloseFigures',false,@logical_scalar);
     parse(p,varargin{:}); o=p.Results;
 
@@ -60,11 +58,7 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
         if ~ok,error('make_ieee_revision_figures_legacy_style:mkdir','%s',msg);end
     end
 
-    if o.UseLegacySigmaSymbol
-        sigmaSymbol='\\sigma_R^2';
-    else
-        sigmaSymbol='\\sigma_X^2';
-    end
+    sigmaSymbol='\\sigma_R^2';
 
     P=A.physicalTable;
     C=A.fig4_M8_SNR20;
@@ -75,7 +69,7 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
     fAllM=make_allm_legacy(P,sigmaSymbol);
 
     out=struct();
-    out.version='I12C-v1';
+    out.version='I12C-v1.1';
     out.sourceBundlePath=A.sourceBundlePath;
     out.outputDirectory=outDir;
     out.sigmaSymbol=sigmaSymbol;
