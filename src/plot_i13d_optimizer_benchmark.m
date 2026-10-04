@@ -211,13 +211,43 @@ function p=save_triplet(fig,outDir,stem)
     p.png=fullfile(outDir,[stem '.png']);
     p.pdf=fullfile(outDir,[stem '.pdf']);
     p.fig=fullfile(outDir,[stem '.fig']);
+
+    if ~isgraphics(fig,'figure')
+        error('plot_i13d_optimizer_benchmark:InvalidFigure', ...
+            'Expected a valid figure handle before export.');
+    end
+
+    ax=findall(fig,'Type','axes');
+    for k=1:numel(ax)
+        try
+            ax(k).Toolbar.Visible='off';
+        catch
+        end
+    end
+    drawnow;
+
+    try
+        savefig(fig,p.fig);
+    catch ME1
+        if isgraphics(fig,'figure')
+            try
+                hgsave(fig,p.fig);
+            catch ME2
+                error('plot_i13d_optimizer_benchmark:FigSaveFailed', ...
+                    'Could not save FIG (%s; fallback: %s).',ME1.message,ME2.message);
+            end
+        else
+            error('plot_i13d_optimizer_benchmark:FigureInvalidated', ...
+                'Figure handle became invalid before FIG save: %s',ME1.message);
+        end
+    end
+
     exportgraphics(fig,p.png,'Resolution',300);
     try
         exportgraphics(fig,p.pdf,'ContentType','vector');
     catch
         exportgraphics(fig,p.pdf);
     end
-    savefig(fig,p.fig);
 end
 
 function tf=text_scalar(v),tf=ischar(v)||(isstring(v)&&isscalar(v));end
