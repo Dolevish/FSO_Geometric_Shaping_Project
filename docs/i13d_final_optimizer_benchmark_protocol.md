@@ -45,7 +45,15 @@ For each case Pattern Search uses:
 
 UseCompletePoll is frozen to false so Pattern Search is not intentionally forced to
 finish an entire poll after an improvement when the comparison is evaluation-budget
-limited. Actual evaluations are recorded and any overrun is reported.
+limited. Actual search evaluations are recorded and any overrun is reported.
+
+Because Pattern Search enforces linear constraints only up to numerical solver
+tolerance, its returned point may miss an active d_min boundary by around 1e-6.
+After termination only, I.13D applies the project's canonical constellation projector
+once. The repair must satisfy ||dx||_inf <= 1e-4 or the task fails. This repair does
+not feed back into the optimizer. One post-hoc fast AMI audit evaluation and the
+independent validator then score the repaired feasible point; the audit evaluation is
+reported separately and is not counted as a search evaluation.
 
 ## Pre-declared equivalence threshold
 

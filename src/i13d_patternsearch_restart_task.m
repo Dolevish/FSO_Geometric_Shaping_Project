@@ -48,9 +48,23 @@ function result = i13d_patternsearch_restart_task(cfg,xBaseline,masterSeed,resta
             @(z)-cfg.AMI_Evaluator(z(:)),x0,A,b,Aeq,beq,lb,ub,[],opts);
         optimizationSeconds=toc(optTimer);
 
-        x=x(:);
-        AMI_functions.assert_constellation_feasible(x,cfg,1e-8);
-        fastMI=-fval;
+        xSolver=x(:);
+        solverFastMI=-fval;
+
+        % Pattern Search can finish within its linear-constraint tolerance
+        % yet miss an active d_min boundary by ~1e-6. Canonicalize only
+        % tiny numerical residuals; material repairs fail loudly.
+        [x,repairMeta]=i13d_finalize_patternsearch_solution(xSolver,cfg, ...
+            'MaxRepairInfNorm',psPolicy.MaxFinalRepairInfNorm);
+
+        % One POST-HOC fast audit evaluation is intentionally outside the
+        % optimizer search budget. It does not influence the Pattern Search
+        % trajectory; it makes the stored fast score correspond exactly to
+        % the canonical feasible constellation that is independently
+        % validated below.
+        fastAuditTimer=tic;
+        fastMI=cfg.AMI_Evaluator(x);
+        fastAuditSeconds=toc(fastAuditTimer);
 
         valTimer=tic;
         valMI=cfg.AMI_Validator(x);
@@ -60,10 +74,15 @@ function result = i13d_patternsearch_restart_task(cfg,xBaseline,masterSeed,resta
         result.x0Raw=xRaw;
         result.x0Feasible=x0;
         result.initialFastAMI=initialFast;
+        result.xSolver=xSolver;
         result.xBest=x;
+        result.solverFastMI=solverFastMI;
         result.bestMIFast=fastMI;
         result.bestMIValidated=valMI;
         result.validationGap=fastMI-valMI;
+        result.finalRepair=repairMeta;
+        result.postHocFastAuditEvaluations=1;
+        result.fastAuditSeconds=fastAuditSeconds;
         result.optimizationSeconds=optimizationSeconds;
         result.validationSeconds=validationSeconds;
         result.taskWallSeconds=toc(taskTimer);
@@ -79,9 +98,10 @@ function result = i13d_patternsearch_restart_task(cfg,xBaseline,masterSeed,resta
         checkpoint.result=result;
         save_atomic(checkpointPath,checkpoint);
 
-        fprintf('[I13D|%s] DONE | fast=%.6f | val=%.6f | delta=%+.3e | evals=%g | %.2fs\n', ...
+        fprintf(['[I13D|%s] DONE | fast=%.6f | val=%.6f | delta=%+.3e | ' ...
+            'evals=%g | repairInf=%.2e | %.2fs\n'], ...
             char(identity.IdentityKey),fastMI,valMI,fastMI-valMI, ...
-            result.functionEvaluations,result.taskWallSeconds);
+            result.functionEvaluations,repairMeta.repairInfNorm,result.taskWallSeconds);
 
     catch ME
         result.success=false;
@@ -107,10 +127,15 @@ function r=empty_result(identity,restartIndex,masterSeed,maxEvals)
     r.x0Raw=[];
     r.x0Feasible=[];
     r.initialFastAMI=NaN;
+    r.xSolver=[];
     r.xBest=[];
+    r.solverFastMI=NaN;
     r.bestMIFast=NaN;
     r.bestMIValidated=NaN;
     r.validationGap=NaN;
+    r.finalRepair=struct();
+    r.postHocFastAuditEvaluations=0;
+    r.fastAuditSeconds=NaN;
     r.functionEvaluations=NaN;
     r.iterations=NaN;
     r.exitflag=NaN;

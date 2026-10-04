@@ -104,6 +104,7 @@ function result = sim_i13d_final_optimizer_benchmark(varargin)
         o,A,F,signatureText);
     checkpointDir=fullfile(outDir,'checkpoints');
     if exist(checkpointDir,'dir')~=7,mkdir(checkpointDir);end
+    fprintf('Run directory: %s\n',outDir);
 
     % ------------------------------------------------------------------
     % Discover valid checkpoints before any pool is created.
@@ -510,6 +511,8 @@ function [restartSummary,caseSummary,physicalSummary,metrics]=reduce_results(tas
     PSFast=zeros(n,1); PSValidated=zeros(n,1); FastValidatorGap=zeros(n,1);
     FunctionEvaluations=zeros(n,1); EvalBudget=zeros(n,1); EvalOverrun=zeros(n,1);
     Iterations=zeros(n,1); Exitflag=zeros(n,1); OptimizationSeconds=zeros(n,1);
+    FastAuditSeconds=zeros(n,1); PostHocFastAuditEvaluations=zeros(n,1);
+    FinalRepairInfNorm=zeros(n,1); PreRepairMinGapDeficit=zeros(n,1);
     ValidationSeconds=zeros(n,1); TaskWallSeconds=zeros(n,1); IdentityKey=strings(n,1);
 
     for j=1:n
@@ -520,14 +523,22 @@ function [restartSummary,caseSummary,physicalSummary,metrics]=reduce_results(tas
         FastValidatorGap(j)=r.validationGap; FunctionEvaluations(j)=r.functionEvaluations;
         EvalBudget(j)=r.maxEvals; EvalOverrun(j)=r.functionEvaluations-r.maxEvals;
         Iterations(j)=r.iterations; Exitflag(j)=r.exitflag;
-        OptimizationSeconds(j)=r.optimizationSeconds; ValidationSeconds(j)=r.validationSeconds;
+        OptimizationSeconds(j)=r.optimizationSeconds;
+        FastAuditSeconds(j)=r.fastAuditSeconds;
+        PostHocFastAuditEvaluations(j)=r.postHocFastAuditEvaluations;
+        if isfield(r,'finalRepair') && isstruct(r.finalRepair) && isfield(r.finalRepair,'repairInfNorm')
+            FinalRepairInfNorm(j)=r.finalRepair.repairInfNorm;
+            PreRepairMinGapDeficit(j)=r.finalRepair.before.minGapDeficit;
+        end
+        ValidationSeconds(j)=r.validationSeconds;
         TaskWallSeconds(j)=r.taskWallSeconds; IdentityKey(j)=r.IdentityKey;
     end
 
     restartSummary=table(M,SNRdB,SigmaR2,Replicate,Restart,Seed,IdentityKey, ...
         InitialFastAMI,PSFast,PSValidated,FastValidatorGap,FunctionEvaluations, ...
         EvalBudget,EvalOverrun,Iterations,Exitflag,OptimizationSeconds, ...
-        ValidationSeconds,TaskWallSeconds);
+        FastAuditSeconds,PostHocFastAuditEvaluations,FinalRepairInfNorm, ...
+        PreRepairMinGapDeficit,ValidationSeconds,TaskWallSeconds);
     restartSummary=sortrows(restartSummary,{'M','SNRdB','SigmaR2','Replicate','Restart'});
 
     nc=height(casePlan);
@@ -623,6 +634,9 @@ function [restartSummary,caseSummary,physicalSummary,metrics]=reduce_results(tas
     metrics.maxPatternSearchFastValidatorGap=max(abs(restartSummary.FastValidatorGap));
     metrics.maxEvaluationOverrun=max(restartSummary.EvalOverrun);
     metrics.totalPatternSearchFunctionEvaluations=sum(restartSummary.FunctionEvaluations);
+    metrics.totalPostHocFastAuditEvaluations=sum(restartSummary.PostHocFastAuditEvaluations);
+    metrics.maxFinalRepairInfNorm=max(restartSummary.FinalRepairInfNorm);
+    metrics.maxPreRepairMinGapDeficit=max(restartSummary.PreRepairMinGapDeficit);
 end
 
 
@@ -703,7 +717,11 @@ function print_summary(R)
     fprintf('RMSE: %.6f bit/symbol\n',M.rmse);
     fprintf('Max PS fast-validator gap: %.3e\n',M.maxPatternSearchFastValidatorGap);
     fprintf('Max evaluation-budget overrun: %+g evals\n',M.maxEvaluationOverrun);
-    fprintf('PS total function evaluations: %.0f\n',M.totalPatternSearchFunctionEvaluations);
+    fprintf('PS total SEARCH function evaluations: %.0f\n',M.totalPatternSearchFunctionEvaluations);
+    fprintf('Post-hoc fast audit evaluations: %.0f (outside search budget)\n', ...
+        M.totalPostHocFastAuditEvaluations);
+    fprintf('Max final canonical repair ||dx||_inf: %.3e\n',M.maxFinalRepairInfNorm);
+    fprintf('Max pre-repair d_min deficit: %.3e\n',M.maxPreRepairMinGapDeficit);
 
     S=M.scheduler;
     if S.nSegments>0

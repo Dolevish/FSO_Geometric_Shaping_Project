@@ -10,11 +10,12 @@ function report = test_i13d_final_optimizer_benchmark()
     fprintf('I.13D - final optimizer benchmark structural regression\n');
     fprintf('============================================================\n');
 
-    tests={@test_frozen_config,@test_task_plan,@test_priority_policy};
+    tests={@test_frozen_config,@test_task_plan,@test_priority_policy,@test_tiny_final_repair};
     names={ ...
         'Frozen case/restart/evaluation counts', ...
         '32-case / 224-task plan with unique identities', ...
-        'Longest-first plan prioritizes turbulent refined high-M work'};
+        'Longest-first plan prioritizes turbulent refined high-M work', ...
+        'Tiny Pattern Search d_min residual is canonically repaired'};
 
     passed=false(numel(tests),1); elapsed=nan(numel(tests),1); messages=strings(numel(tests),1);
     for k=1:numel(tests)
@@ -82,6 +83,30 @@ function test_priority_policy()
     key=char(Q.IdentityKey(1));
     assert(contains(key,'M32_SNR30_sig300'));
     assert(all(diff(Q.Priority)<=0));
+end
+
+
+function test_tiny_final_repair()
+    cfg=build_fso_config(4,1,20,0.3, ...
+        'minGap',0.01,'pinZero',true,'saMaxIter',1,'saNStarts',1,'logEvery',0);
+
+    % Exact feasible boundary constellation: mean=1, x1=0, first two
+    % adjacent gaps exactly d_min.
+    x=[0;0.01;0.02;3.97];
+
+    % Mimic the observed Pattern Search numerical residual while preserving
+    % mean power: first gap is short by 9.7e-7.
+    xBad=x;
+    xBad(2)=xBad(2)-9.7e-7;
+    xBad(4)=xBad(4)+9.7e-7;
+
+    [xFix,meta]=i13d_finalize_patternsearch_solution(xBad,cfg, ...
+        'MaxRepairInfNorm',1e-4);
+
+    AMI_functions.assert_constellation_feasible(xFix,cfg,1e-10);
+    assert(meta.wasRepaired);
+    assert(meta.before.minGapDeficit>9e-7 && meta.before.minGapDeficit<1.1e-6);
+    assert(meta.repairInfNorm<1e-4);
 end
 
 

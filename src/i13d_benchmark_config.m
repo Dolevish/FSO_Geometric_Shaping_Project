@@ -78,6 +78,7 @@ function F = i13d_benchmark_config()
     F.PatternSearch.StepTolerance=1e-8;
     F.PatternSearch.FunctionTolerance=1e-8;
     F.PatternSearch.UseParallel=false;
+    F.PatternSearch.MaxFinalRepairInfNorm=1e-4;
 
     % Longest-first dispatch policy. A task is prioritized first by whether
     % it is a turbulent refined-dt case, then by turbulent vs AWGN, then M,
