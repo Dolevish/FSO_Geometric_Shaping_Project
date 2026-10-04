@@ -101,12 +101,12 @@ function test_tiny_final_repair()
     xBad(4)=xBad(4)+9.7e-7;
 
     [xFix,meta]=i13d_finalize_patternsearch_solution(xBad,cfg, ...
-        'MaxRepairInfNorm',1e-4);
+        'MaxRepairInfNorm',1e-5);
 
     AMI_functions.assert_constellation_feasible(xFix,cfg,1e-10);
     assert(meta.wasRepaired);
     assert(meta.before.minGapDeficit>9e-7 && meta.before.minGapDeficit<1.1e-6);
-    assert(meta.repairInfNorm<1e-4);
+    assert(meta.repairInfNorm<1e-5);
 end
 
 
