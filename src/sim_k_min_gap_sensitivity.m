@@ -352,15 +352,23 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
     nPending=numel(pending);
     active=parallel.FevalFuture.empty(0,1);
     activeRows=zeros(0,1);
+    activeDispatchElapsed=zeros(0,1);
     nextPending=1;
     completed=0;
+    submitted=0;
 
     traceElapsed=zeros(nPending,1);
+    traceDispatchElapsed=zeros(nPending,1);
+    traceClientElapsed=zeros(nPending,1);
     traceCompleted=zeros(nPending,1);
     traceActive=zeros(nPending,1);
     tracePending=zeros(nPending,1);
     traceIdentity=strings(nPending,1);
     traceWorkerTaskSeconds=zeros(nPending,1);
+    traceSARuntimeSeconds=zeros(nPending,1);
+    traceValidationSeconds=zeros(nPending,1);
+    traceFastAMI=zeros(nPending,1);
+    traceValidatedAMI=zeros(nPending,1);
 
     wallTimer=tic;
 
@@ -369,15 +377,24 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
         active(end+1,1)=submit_one(pp,rowIdx,taskPlan,casePlan,caseSpecs, ...
             checkpointPaths,signatureText); %#ok<AGROW>
         activeRows(end+1,1)=rowIdx; %#ok<AGROW>
+        activeDispatchElapsed(end+1,1)=toc(wallTimer); %#ok<AGROW>
         nextPending=nextPending+1;
+        submitted=submitted+1;
+        print_task_started(rowIdx,submitted,nPending,numel(active),nWorkers, ...
+            max(0,nPending-nextPending+1),taskPlan,casePlan);
     end
 
     try
         while ~isempty(active)
             [finishedIdx,res]=fetchNext(active);
             rowIdx=activeRows(finishedIdx);
+            dispatchElapsed=activeDispatchElapsed(finishedIdx);
+            finishElapsed=toc(wallTimer);
+            clientElapsed=max(0,finishElapsed-dispatchElapsed);
+
             active(finishedIdx)=[];
             activeRows(finishedIdx)=[];
+            activeDispatchElapsed(finishedIdx)=[];
 
             taskResults{rowIdx}=res;
             completed=completed+1;
@@ -387,19 +404,30 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
                 active(end+1,1)=submit_one(pp,newRow,taskPlan,casePlan,caseSpecs, ...
                     checkpointPaths,signatureText);
                 activeRows(end+1,1)=newRow;
+                activeDispatchElapsed(end+1,1)=toc(wallTimer);
                 nextPending=nextPending+1;
+                submitted=submitted+1;
+                print_task_started(newRow,submitted,nPending,numel(active),nWorkers, ...
+                    max(0,nPending-nextPending+1),taskPlan,casePlan);
             end
 
-            traceElapsed(completed)=toc(wallTimer);
+            traceElapsed(completed)=finishElapsed;
+            traceDispatchElapsed(completed)=dispatchElapsed;
+            traceClientElapsed(completed)=clientElapsed;
             traceCompleted(completed)=completed;
             traceActive(completed)=numel(active);
             tracePending(completed)=max(0,nPending-nextPending+1);
             traceIdentity(completed)=taskPlan.IdentityKey(rowIdx);
             traceWorkerTaskSeconds(completed)=res.taskWallSeconds;
+            traceSARuntimeSeconds(completed)=field_or_nan(res,'runtime');
+            traceValidationSeconds(completed)=field_or_nan(res,'validationRuntime');
+            traceFastAMI(completed)=field_or_nan(res,'bestMIFast');
+            traceValidatedAMI(completed)=field_or_nan(res,'bestMIValidated');
 
-            fprintf('  K completed %d/%d this run | total %d/%d | active=%d | pending=%d | %s\n', ...
-                completed,nPending,sum(~cellfun(@isempty,taskResults)),height(taskPlan), ...
-                numel(active),tracePending(completed),taskPlan.IdentityKey(rowIdx));
+            print_task_completed(rowIdx,completed,nPending, ...
+                sum(~cellfun(@isempty,taskResults)),height(taskPlan), ...
+                numel(active),tracePending(completed),clientElapsed,res, ...
+                taskPlan,casePlan);
         end
     catch ME
         if ~isempty(active),try,cancel(active);catch,end,end
@@ -411,11 +439,16 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
     capacitySeconds=nWorkers*wallSeconds;
     utilization=busySeconds/max(capacitySeconds,eps);
 
-    trace=table(traceElapsed(1:completed),traceCompleted(1:completed), ...
+    trace=table(traceElapsed(1:completed),traceDispatchElapsed(1:completed), ...
+        traceClientElapsed(1:completed),traceCompleted(1:completed), ...
         traceActive(1:completed),tracePending(1:completed), ...
         traceIdentity(1:completed),traceWorkerTaskSeconds(1:completed), ...
-        'VariableNames',{'ElapsedSeconds','CompletedThisRun','ActiveAfterDispatch', ...
-        'PendingAfterDispatch','FinishedIdentity','FinishedTaskWallSeconds'});
+        traceSARuntimeSeconds(1:completed),traceValidationSeconds(1:completed), ...
+        traceFastAMI(1:completed),traceValidatedAMI(1:completed), ...
+        'VariableNames',{'CompletionElapsedSeconds','DispatchElapsedSeconds', ...
+        'ClientElapsedSeconds','CompletedThisRun','ActiveAfterDispatch', ...
+        'PendingAfterDispatch','FinishedIdentity','FinishedTaskWallSeconds', ...
+        'SARuntimeSeconds','ValidationSeconds','FastAMI','ValidatedAMI'});
 
     preTail=trace.PendingAfterDispatch>0;
     if any(preTail)
@@ -442,6 +475,45 @@ function [taskResults,segment,trace]=run_dynamic_queue( ...
         wallSeconds/3600,busySeconds/3600,100*utilization);
     fprintf('Dynamic queue full before tail: %d | min active while pending>0: %d/%d\n', ...
         fullQueueMaintained,minActiveBeforeTail,nWorkers);
+end
+
+
+function print_task_started(rowIdx,submitted,nPending,nActive,nWorkers,nUnsubmitted,taskPlan,casePlan)
+    t=taskPlan(rowIdx,:);
+    R=casePlan(t.TaskCaseIndex,:);
+    fprintf(['  K START %3d/%3d | M=%d | d_min=%.3f | rep=%d | restart=%02d ' ...
+        '| active=%d/%d | unsubmitted=%d | %s\n'], ...
+        submitted,nPending,R.M,R.MinGap,R.Replicate,t.Restart, ...
+        nActive,nWorkers,nUnsubmitted,t.IdentityKey);
+end
+
+
+function print_task_completed(rowIdx,completed,nPending,totalComplete,totalTasks, ...
+        nActive,nUnsubmitted,clientElapsed,res,taskPlan,casePlan)
+    t=taskPlan(rowIdx,:);
+    R=casePlan(t.TaskCaseIndex,:);
+
+    taskSec=field_or_nan(res,'taskWallSeconds');
+    saSec=field_or_nan(res,'runtime');
+    valSec=field_or_nan(res,'validationRuntime');
+    fastMI=field_or_nan(res,'bestMIFast');
+    valMI=field_or_nan(res,'bestMIValidated');
+
+    fprintf(['  K DONE  %3d/%3d | total=%d/%d | M=%d | d_min=%.3f | rep=%d | restart=%02d ' ...
+        '| task=%.2f min | SA=%.2f min | validation=%.2f s | client=%.2f min ' ...
+        '| fast=%.6f | val=%.6f | active=%d | unsubmitted=%d | %s\n'], ...
+        completed,nPending,totalComplete,totalTasks,R.M,R.MinGap,R.Replicate,t.Restart, ...
+        taskSec/60,saSec/60,valSec,clientElapsed/60,fastMI,valMI, ...
+        nActive,nUnsubmitted,t.IdentityKey);
+end
+
+
+function v=field_or_nan(s,name)
+    if isstruct(s)&&isfield(s,name)&&isscalar(s.(name))&&isnumeric(s.(name))&&isfinite(s.(name))
+        v=double(s.(name));
+    else
+        v=NaN;
+    end
 end
 
 

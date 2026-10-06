@@ -110,3 +110,25 @@ the mean validated AMI of the two replicate winners; error bars are the sample
 standard deviation across replicates.
 
 No global-optimum claim is made.
+
+
+## Live scheduler logging (K.1)
+
+The client prints every restart dispatch immediately, for example:
+
+    K START ... | M=32 | d_min=0.000 | rep=1 | restart=01 | active=1/8
+
+Every completed restart is also printed with timing and AMI information:
+
+    K DONE ... | task=<min> | SA=<min> | validation=<s> | client=<min> | fast=<...> | val=<...>
+
+The task value is the worker-measured end-to-end restart wall time from the start of
+sa_restart_task through independent validation. SA is the optimizer runtime,
+validation is the independent-validator runtime, and client is the elapsed wall time
+from client dispatch until fetchNext receives the completed future.
+
+The scheduler CSV retains all of these timing fields.
+
+This is a logging-only change. It does not alter the scientific configuration, seeds,
+evaluator, validator, constraints, or optimization budget. The K-v1 scientific
+signature therefore remains unchanged and valid Commit-K checkpoints remain resumable.
