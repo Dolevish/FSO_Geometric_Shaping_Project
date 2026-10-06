@@ -11,6 +11,19 @@ function root = default_results_root()
 end
 
 
+function root = revision2_results_root()
+%REVISION2_RESULTS_ROOT  Repository-local root for the clean revision-2 campaign.
+%
+% Commit K and all subsequent clean reruns should write beneath
+%   results/ieee_revision2
+% while the historical default_results_root() is intentionally preserved so
+% older I.* scripts can still locate their original artifacts.
+    srcDir = fileparts(mfilename('fullpath'));
+    repoRoot = fileparts(srcDir);
+    root = fullfile(repoRoot, 'results', 'ieee_revision2');
+end
+
+
 function meta = run_metadata(sourceScript)
 %RUN_METADATA  Common metadata stored with every experiment bundle.
     if nargin < 1 || isempty(sourceScript), sourceScript = 'unknown'; end
