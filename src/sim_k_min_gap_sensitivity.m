@@ -40,9 +40,18 @@ function result = sim_k_min_gap_sensitivity(varargin)
     addParameter(p,'WriteCSV',true,@logical_scalar);
     addParameter(p,'MakeFigure',true,@logical_scalar);
     addParameter(p,'DryRun',false,@logical_scalar);
+    addParameter(p,'FrozenConfig',[],@(v)isempty(v)||(isstruct(v)&&isscalar(v)));
     parse(p,varargin{:}); o=p.Results;
 
-    K=k_min_gap_config();
+    if isempty(o.FrozenConfig)
+        K=k_min_gap_config();
+    else
+        K=o.FrozenConfig;
+        if ~isfield(K,'version')||~strcmp(K.version,'K4-v1')
+            error('sim_k_min_gap_sensitivity:FrozenConfig', ...
+                'The optional FrozenConfig is reserved for K4-v1 extension.');
+        end
+    end
     K.ParallelWorkers=double(o.ParallelWorkers);
 
     [casePlan,taskPlan]=k_build_task_plan(K);
@@ -144,13 +153,15 @@ function result = sim_k_min_gap_sensitivity(varargin)
     result.detailedTaskResults=taskResults;
     result.globalOptimumClaim=false;
 
-    matPath=fullfile(outDir,'K_min_gap_results.mat');
+    outputStem='K_min_gap';
+    if strcmp(K.version,'K4-v1'),outputStem='K4_extension';end
+    matPath=fullfile(outDir,[outputStem '_results.mat']);
     save(matPath,'result','-v7.3');
 
     if o.WriteCSV
-        writetable(restartSummary,fullfile(outDir,'K_min_gap_restart_results.csv'));
-        writetable(replicateSummary,fullfile(outDir,'K_min_gap_replicate_summary.csv'));
-        writetable(physicalSummary,fullfile(outDir,'K_min_gap_physical_summary.csv'));
+        writetable(restartSummary,fullfile(outDir,[outputStem '_restart_results.csv']));
+        writetable(replicateSummary,fullfile(outDir,[outputStem '_replicate_summary.csv']));
+        writetable(physicalSummary,fullfile(outDir,[outputStem '_physical_summary.csv']));
         if ~isempty(trace)
             writetable(trace,fullfile(outDir,'K_scheduler_trace.csv'));
         end
@@ -241,6 +252,7 @@ function sig=build_signature(K,casePlan)
     sig.SNRdB=K.SNRdB;
     sig.SigmaR2=K.SigmaR2;
     sig.MinGapVec=K.MinGapVec;
+    if isfield(K,'MinGapByM'),sig.MinGapByM=K.MinGapByM;end
     sig.Replicates=K.Replicates;
     sig.NStarts=K.NStarts;
     sig.MaxIter=K.MaxIter;
@@ -711,7 +723,11 @@ end
 
 function print_summary(R)
     fprintf('\n============================================================\n');
-    fprintf('COMMIT K COMPLETE\n');
+    if strcmp(R.version,'K4-v1')
+        fprintf('COMMIT K4 EXTENSION COMPLETE\n');
+    else
+        fprintf('COMMIT K COMPLETE\n');
+    end
     fprintf('Physical sensitivity points: %d | replicate cases: %d | restart tasks: %d\n', ...
         R.metrics.nPhysicalSensitivityPoints,R.metrics.nReplicateCases,R.metrics.nRestartTasks);
     fprintf('Max |fast-validator| gap: %.3e bit/symbol\n',R.metrics.maxAbsFastValidatorGap);

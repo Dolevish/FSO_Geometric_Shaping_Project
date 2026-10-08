@@ -20,7 +20,12 @@ function [casePlan,taskPlan] = k_build_task_plan(K)
     q=0;
     for m=K.MVec
         iM=find(K.MVec==m,1);
-        for d=K.MinGapVec
+        if isfield(K,'MinGapByM')
+            gapsForM=K.MinGapByM{iM};
+        else
+            gapsForM=K.MinGapVec;
+        end
+        for d=gapsForM
             for rep=K.Replicates
                 q=q+1;
                 repBaseSeed=double(K.baseSeed)+(rep-1)*10000019;
