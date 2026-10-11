@@ -15,8 +15,12 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
 %
 % IMPORTANT SCIENTIFIC POLICIES:
 %   - No SA or AMI evaluation is performed here.
-%   - Performance curves use the mean validated AMI of the two production
-%     replicates, as frozen in I.12A.
+%   - Legacy default: curves use the mean validated AMI across two replicates.
+%   - Optional best-validated mode: curves use the largest validated AMI
+%     among all saved production restarts (the max of two independently
+%     validated replicate winners). No optimization or AMI is rerun.
+%   - Best-validated figures have the exact legacy visual style but are
+%     exported to their own directory; the old mean figures are untouched.
 %   - The constellation geometry uses replicate 1 consistently, as frozen
 %     in I.12A-v2. The AMI annotation beside that geometry therefore uses
 %     replicate 1, not the two-replicate mean.
@@ -33,7 +37,9 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
 %       'ProductionBundlePath','/.../i11p1ProductionBundle.mat');
 %
 % Outputs are written under:
-%   <production>/i12_analysis/ieee_figures_legacy_style/
+%   <production>/i12_analysis/ieee_figures_legacy_style/ (mean default)
+%   <production>/i12_analysis/ieee_figures_legacy_style_best_validated/
+%       (best-validated; only the two performance plots, not Fig. 4)
 %
 % No global-optimum claim is implied.
 
@@ -42,14 +48,22 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
     addParameter(p,'ResultsRoot',fso_result_utils.default_results_root(),@text_scalar);
     addParameter(p,'OutputDirectory','',@text_scalar);
     addParameter(p,'CloseFigures',false,@logical_scalar);
+    addParameter(p,'PerformanceAggregation','mean',@text_scalar);
     parse(p,varargin{:}); o=p.Results;
+    mode=lower(strtrim(string(o.PerformanceAggregation)));
+    if ~ismember(mode,["mean","best-validated"])
+        error('make_ieee_revision_figures_legacy_style:BadAggregation', ...
+            'PerformanceAggregation must be mean or best-validated.');
+    end
 
     A=analyze_i11p1_production_results( ...
         'ProductionBundlePath',o.ProductionBundlePath, ...
-        'ResultsRoot',o.ResultsRoot,'WriteCSV',true);
+        'ResultsRoot',o.ResultsRoot,'WriteCSV',mode=="mean");
 
     if strlength(string(o.OutputDirectory))>0
         outDir=char(string(o.OutputDirectory));
+    elseif mode=="best-validated"
+        outDir=fullfile(A.outputDirectory,'ieee_figures_legacy_style_best_validated');
     else
         outDir=fullfile(A.outputDirectory,'ieee_figures_legacy_style');
     end
@@ -63,22 +77,43 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
     P=A.physicalTable;
     C=A.fig4_M8_SNR20;
     validate_inputs(P,C);
+    if mode=="best-validated"
+        % The case-table winner of each replicate is already selected from
+        % ALL its restarts by the independent AMI validator. Taking the max
+        % of replicate winners therefore gives the absolute observed winner.
+        P=select_i11p1_best_validated_curves(A);
+    else
+        P.GSCurveValidated=P.GSMeanValidated;
+    end
 
     fAMI=make_m8_ami_legacy(P,sigmaSymbol);
-    fConst=make_constellation_legacy(C,A.tableI_M8_SNR20,sigmaSymbol);
     fAllM=make_allm_legacy(P,sigmaSymbol);
 
     out=struct();
-    out.version='I12C-v1.1';
+    out.version='I12C-v1.2';
     out.sourceBundlePath=A.sourceBundlePath;
     out.outputDirectory=outDir;
     out.sigmaSymbol=sigmaSymbol;
     out.axisPolicy='legacy-paper axes; expand upper bound only to prevent clipping';
-    out.performanceAggregation='mean validated AMI across two replicates';
-    out.geometryPolicy='replicate 1';
     out.amiVsSNR=save_triplet(fAMI,outDir,'AMI vs SNR');
-    out.constellation=save_triplet(fConst,outDir,'Constellation Comparison2');
     out.amiVsSNRAllM=save_triplet(fAllM,outDir,'AMI vs SNR allM');
+
+    if mode=="best-validated"
+        out.performanceAggregation=['max of independently validated SA restart ' ...
+            'AMI values across both frozen I.11.1 production replicates'];
+        out.geometryPolicy='original replicate-1 constellation figure unchanged/not regenerated';
+        out.constellation=struct('generated',false);
+        out.bestValidatedTableCSV=fullfile(outDir,'best_validated_curve_points.csv');
+        columns={'M','SigmaX2','SNRdB','PAMValidated','GSRep1Validated', ...
+            'GSRep2Validated','GSBestValidated','GSBestReplicate', ...
+            'GSCurveValidated','GainBestBits','NRestartsConsidered'};
+        writetable(P(:,columns),out.bestValidatedTableCSV);
+    else
+        fConst=make_constellation_legacy(C,A.tableI_M8_SNR20,sigmaSymbol);
+        out.performanceAggregation='mean validated AMI across two replicates';
+        out.geometryPolicy='replicate 1';
+        out.constellation=save_triplet(fConst,outDir,'Constellation Comparison2');
+    end
 
     save(fullfile(outDir,'i12c_legacy_figure_manifest.mat'),'out','-v7.3');
 
@@ -88,12 +123,19 @@ function out = make_ieee_revision_figures_legacy_style(varargin)
     fprintf('Sigma symbol  : %s\n',sigmaSymbol);
     fprintf('Output dir    : %s\n',outDir);
     fprintf('AMI vs SNR    : %s\n',out.amiVsSNR.pdf);
-    fprintf('Constellation : %s\n',out.constellation.pdf);
+    if mode=="mean"
+        fprintf('Constellation : %s\n',out.constellation.pdf);
+    else
+        fprintf('Best-run CSV  : %s\n',out.bestValidatedTableCSV);
+        fprintf('Selection     : maximum validated AMI across all saved restarts\n');
+    end
     fprintf('AMI all M     : %s\n',out.amiVsSNRAllM.pdf);
     fprintf('============================================================\n');
 
     if o.CloseFigures
-        close(fAMI); close(fConst); close(fAllM);
+        close(fAMI);
+        close(fAllM);
+        if mode=="mean", close(fConst); end
     end
 end
 
@@ -122,7 +164,7 @@ function fig=make_m8_ami_legacy(P,sigmaSymbol)
         assert(height(R)==numel(snrVec),'Incomplete M=8 AMI curve.');
         c=colors{i}; m=markers{i};
 
-        plot(ax,R.SNRdB,R.GSMeanValidated,['-' m], ...
+        plot(ax,R.SNRdB,R.GSCurveValidated,['-' m], ...
             'Color',c,'LineWidth',2.0, ...
             'MarkerFaceColor',c,'MarkerSize',7, ...
             'DisplayName',sprintf('GS opt  (%s=%.2f)',sigmaSymbol,sigVec(i)));
@@ -276,12 +318,12 @@ function fig=make_allm_legacy(P,sigmaSymbol)
                 'Marker',markers{iM},'MarkerSize',markerSize-1, ...
                 'MarkerFaceColor','none');
 
-            hOpt(iM)=plot(ax,R.SNRdB,R.GSMeanValidated,'-', ...
+            hOpt(iM)=plot(ax,R.SNRdB,R.GSCurveValidated,'-', ...
                 'Color',colorsM(iM,:),'LineWidth',linewidthOpt, ...
                 'Marker',markers{iM},'MarkerSize',markerSize, ...
                 'MarkerFaceColor',colorsM(iM,:));
 
-            panelMax=max(panelMax,max([R.PAMValidated;R.GSMeanValidated]));
+            panelMax=max(panelMax,max([R.PAMValidated;R.GSCurveValidated]));
         end
 
         xlabel(ax,'SNR [dB]','FontSize',12,'FontWeight','bold');
