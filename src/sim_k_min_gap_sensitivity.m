@@ -47,9 +47,9 @@ function result = sim_k_min_gap_sensitivity(varargin)
         K=k_min_gap_config();
     else
         K=o.FrozenConfig;
-        if ~isfield(K,'version')||~strcmp(K.version,'K4-v1')
+        if ~isfield(K,'version')||~ismember(K.version,{'K4-v1','K4p2-v1'})
             error('sim_k_min_gap_sensitivity:FrozenConfig', ...
-                'The optional FrozenConfig is reserved for K4-v1 extension.');
+                'FrozenConfig is reserved for K4-v1 or K4p2-v1 extension.');
         end
     end
     K.ParallelWorkers=double(o.ParallelWorkers);
@@ -155,6 +155,7 @@ function result = sim_k_min_gap_sensitivity(varargin)
 
     outputStem='K_min_gap';
     if strcmp(K.version,'K4-v1'),outputStem='K4_extension';end
+    if strcmp(K.version,'K4p2-v1'),outputStem='K4p2_extension';end
     matPath=fullfile(outDir,[outputStem '_results.mat']);
     save(matPath,'result','-v7.3');
 
